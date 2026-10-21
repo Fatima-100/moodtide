@@ -1,0 +1,6 @@
+{
+  "name": "MoodTide",
+  "description": "A mood-aware music player with an adaptive learning suggestion engine and PostgreSQL-like relational database layer.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
