@@ -1,246 +1,237 @@
-import React from 'react';
-import { useApp } from '../context/AppContext';
-import { MOOD_COORDINATES } from '../lib/db';
-import { MoodType } from '../types/database';
-import { Calendar, TrendingUp, Sparkles, Heart, ArrowUpRight, Music, Play, Pause } from 'lucide-react';
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  CartesianGrid,
-} from 'recharts';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { api, fmtDay, fmtTime, metaOf, MOOD_KEYS, MOOD_META, type Mood, type MoodScore } from '../lib/moodApi';
 
-export const MoodDiaryPage: React.FC = () => {
-  const { schema, currentUser, playSong, currentSong, isPlaying, pauseSong, resumeSong } = useApp();
+interface Checkin {
+  checkin_id: string;
+  mood_label: string;
+  energy_level: number;
+  checked_at: string;
+}
 
-  // Mood Checkins for current user
-  const userCheckins = schema.mood_checkins
-    .filter((c) => c.user_id === currentUser.user_id)
-    .sort((a, b) => new Date(a.checked_at).getTime() - new Date(b.checked_at).getTime());
+const ENERGY_WORDS = ['Very low', 'Low', 'Medium', 'High', 'Very high'];
 
-  // Mood Scores for current user
-  const userScores = schema.mood_scores
-    .filter((s) => s.user_id === currentUser.user_id)
-    .sort((a, b) => new Date(a.calculated_at).getTime() - new Date(b.calculated_at).getTime());
+function EnergyDots({ level }: { level: number }) {
+  return (
+    <span className="inline-flex gap-1" aria-label={`Energy ${level} of 5`}>
+      {[1, 2, 3, 4, 5].map((i) => (
+        <span key={i} className={`h-1.5 w-3 rounded-full ${i <= level ? 'bg-zinc-200' : 'bg-zinc-700'}`} />
+      ))}
+    </span>
+  );
+}
 
-  // Chart data: progression over time
-  const timelineData = userScores.slice(-10).map((s, idx) => ({
-    time: `Log #${idx + 1}`,
-    score: s.mood_score,
-    energy: Math.round(s.avg_energy * 100),
-    mood: s.detected_mood,
-  }));
+export const MoodDiaryPage = () => {
+  const [checkins, setCheckins] = useState<Checkin[] | null>(null);
+  const [current, setCurrent] = useState<MoodScore | null>(null);
+  const [mood, setMood] = useState<Mood>('calm');
+  const [energy, setEnergy] = useState(3);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [saved, setSaved] = useState('');
 
-  // Top Mood Lifters from Song_Impact
-  const impacts = schema.song_impact.filter((i) => i.user_id === currentUser.user_id);
+  const load = useCallback(async () => {
+    try {
+      const [c, cur] = await Promise.all([
+        api<Checkin[]>('/mood/checkins'),
+        api<MoodScore | null>('/mood/current'),
+      ]);
+      setCheckins(c);
+      setCurrent(cur);
+      setError('');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not load your diary.');
+      setCheckins([]);
+    }
+  }, []);
 
-  // Group impacts by song
-  const lifters = impacts.map((imp) => {
-    const song = schema.songs.find((s) => s.song_id === imp.song_id);
-    const artist = song ? schema.artists.find((a) => a.artist_id === song.artist_id) : null;
-    const feat = song ? schema.song_features.find((f) => f.song_id === song.song_id) : null;
-    return {
-      ...imp,
-      song,
-      artist,
-      feat,
-    };
-  });
+  useEffect(() => {
+    load();
+  }, [load]);
 
-  // Weekly Calendar simulation (7 days)
-  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-  const calendarDays = [
-    { day: 'Mon', mood: 'calm' as MoodType, energy: 2, label: 'Oct 14' },
-    { day: 'Tue', mood: 'energetic' as MoodType, energy: 4, label: 'Oct 15' },
-    { day: 'Wed', mood: 'stressed' as MoodType, energy: 3, label: 'Oct 16' },
-    { day: 'Thu', mood: 'calm' as MoodType, energy: 3, label: 'Oct 17' },
-    { day: 'Fri', mood: 'happy' as MoodType, energy: 5, label: 'Oct 18' },
-    { day: 'Sat', mood: 'calm' as MoodType, energy: 2, label: 'Oct 19' },
-    { day: 'Sun', mood: (userScores.slice(-1)[0]?.detected_mood || 'calm') as MoodType, energy: 3, label: 'Today' },
-  ];
-
-  const moodColors: Record<MoodType, string> = {
-    happy: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
-    calm: 'bg-teal-500/20 text-teal-300 border-teal-500/40',
-    sad: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40',
-    energetic: 'bg-rose-500/20 text-rose-300 border-rose-500/40',
-    stressed: 'bg-violet-500/20 text-violet-300 border-violet-500/40',
+  const save = async () => {
+    setSaving(true);
+    setError('');
+    setSaved('');
+    try {
+      await api('/checkins', { method: 'POST', body: { mood, energy } });
+      setSaved(`Saved: ${MOOD_META[mood].label}, energy ${ENERGY_WORDS[energy - 1].toLowerCase()}. Your suggestions were refreshed.`);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save your check-in.');
+    } finally {
+      setSaving(false);
+    }
   };
 
+  const days = useMemo(() => {
+    const out: { day: string; items: Checkin[] }[] = [];
+    for (const c of checkins ?? []) {
+      const day = fmtDay(c.checked_at);
+      const last = out[out.length - 1];
+      if (last && last.day === day) last.items.push(c);
+      else out.push({ day, items: [c] });
+    }
+    return out;
+  }, [checkins]);
+
+  const mix = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const c of checkins ?? []) {
+      const label = metaOf(c.mood_label).label;
+      counts.set(label, (counts.get(label) ?? 0) + 1);
+    }
+    const total = checkins?.length ?? 0;
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([label, n]) => ({ label, n, pct: total ? Math.round((n / total) * 100) : 0, meta: metaOf(label) }));
+  }, [checkins]);
+
+  const cur = current ? metaOf(current.detected_mood) : null;
+
   return (
-    <div className="max-w-7xl mx-auto px-6 py-6 space-y-8 animate-in fade-in duration-300">
-      <div>
-        <div className="flex items-center gap-2 text-teal-400 text-xs font-semibold uppercase tracking-wider font-mono">
-          <Calendar className="w-4 h-4" />
-          <span>Longitudinal Affective Telemetry</span>
+    <div className="max-w-5xl mx-auto px-6 py-10 text-zinc-100">
+      <h1 className="text-3xl font-semibold tracking-tight">Mood diary</h1>
+      <p className="mt-2 max-w-xl text-zinc-400">
+        Log how you feel and MoodTide uses it to pick your next songs. Each check-in also refreshes your suggestions.
+      </p>
+
+      {error && (
+        <div role="alert" className="mt-6 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+          {error}
         </div>
-        <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight mt-1">
-          Mood Diary & Emotional Impact
-        </h1>
-        <p className="text-xs sm:text-sm text-zinc-400 mt-1 max-w-2xl">
-          Visualizes your affective trajectory over time from <code className="text-teal-400 font-mono">Mood_Checkins</code>,
-          evaluated by <code className="text-teal-400 font-mono">Mood_Scores</code>, and measures which songs elevated your emotional state.
-        </p>
-      </div>
+      )}
 
-      {/* Weekly Colour Calendar */}
-      <div className="rounded-2xl bg-zinc-900/50 border border-zinc-800/80 p-6 backdrop-blur-md">
-        <h3 className="text-sm font-bold text-white mb-3">Weekly Affective Calendar (Oct 14 - Oct 20)</h3>
-        <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-3">
-          {calendarDays.map((item) => {
-            const coord = MOOD_COORDINATES[item.mood];
-            return (
-              <div
-                key={item.day}
-                className={`p-3.5 rounded-xl border flex flex-col justify-between min-h-[105px] transition-all ${
-                  moodColors[item.mood]
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="font-mono text-xs font-bold text-white">{item.day}</span>
-                  <span className="text-[10px] text-zinc-400">{item.label}</span>
-                </div>
+      <div className="mt-8 grid gap-6 lg:grid-cols-5">
+        {/* check-in form */}
+        <section className="lg:col-span-3 rounded-2xl border border-white/10 bg-white/5 p-6">
+          <h2 className="text-lg font-medium">How are you feeling right now?</h2>
 
-                <div className="mt-2">
-                  <p className="text-sm font-extrabold capitalize">{item.mood}</p>
-                  <span className="text-[10px] opacity-80 font-mono">
-                    Energy Level: {item.energy}/5
-                  </span>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Mood Progression Line Chart */}
-      <div className="rounded-2xl bg-zinc-900/50 border border-zinc-800/80 p-6 backdrop-blur-md">
-        <div className="flex items-center justify-between gap-4 border-b border-zinc-800/80 pb-3 mb-4">
-          <div className="flex items-center gap-2">
-            <TrendingUp className="w-4 h-4 text-teal-400" />
-            <h3 className="text-sm font-bold text-white">Affective Valence & Momentum Over Time</h3>
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-5" role="radiogroup" aria-label="Mood">
+            {MOOD_KEYS.map((k) => {
+              const m = MOOD_META[k];
+              const on = mood === k;
+              return (
+                <button
+                  key={k}
+                  type="button"
+                  role="radio"
+                  aria-checked={on}
+                  onClick={() => setMood(k)}
+                  className={`rounded-xl border px-3 py-3 text-sm transition focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60 ${
+                    on ? `${m.chip} font-medium` : 'border-white/10 text-zinc-300 hover:border-white/30'
+                  }`}
+                >
+                  <span className={`mr-2 inline-block h-2 w-2 rounded-full ${m.dot}`} />
+                  {m.label}
+                </button>
+              );
+            })}
           </div>
-          <div className="flex items-center gap-4 text-xs font-mono">
-            <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-teal-400" />
-              <span className="text-zinc-300">Mood Score (0-100)</span>
+
+          <div className="mt-6">
+            <div className="flex items-baseline justify-between text-sm">
+              <label htmlFor="energy" className="text-zinc-300">Energy level</label>
+              <span className="text-zinc-400">{ENERGY_WORDS[energy - 1]}</span>
             </div>
-            <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-amber-400" />
-              <span className="text-zinc-300">Acoustic Energy (%)</span>
-            </div>
+            <input
+              id="energy"
+              type="range"
+              min={1}
+              max={5}
+              step={1}
+              value={energy}
+              onChange={(e) => setEnergy(Number(e.target.value))}
+              className="mt-2 w-full accent-white"
+            />
           </div>
-        </div>
 
-        <div className="h-64 w-full">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={timelineData} margin={{ top: 10, right: 20, left: -20, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
-              <XAxis dataKey="time" stroke="#71717a" fontSize={11} tickLine={false} />
-              <YAxis stroke="#71717a" fontSize={11} domain={[0, 100]} tickLine={false} />
-              <Tooltip
-                contentStyle={{ backgroundColor: '#09090b', borderColor: '#27272a', borderRadius: '0.75rem', fontSize: '12px' }}
-                labelStyle={{ color: '#fafafa', fontWeight: 'bold' }}
-              />
-              <Line
-                type="monotone"
-                dataKey="score"
-                stroke="#2dd4bf"
-                strokeWidth={2.5}
-                dot={{ r: 4, fill: '#2dd4bf' }}
-                activeDot={{ r: 6 }}
-              />
-              <Line
-                type="monotone"
-                dataKey="energy"
-                stroke="#fbbf24"
-                strokeWidth={2.5}
-                dot={{ r: 4, fill: '#fbbf24' }}
-                activeDot={{ r: 6 }}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving}
+            className="mt-6 rounded-xl bg-white px-5 py-2.5 text-sm font-medium text-zinc-900 transition hover:bg-zinc-200 disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+          >
+            {saving ? 'Saving…' : 'Save check-in'}
+          </button>
+          {saved && <p className="mt-3 text-sm text-emerald-300" role="status">{saved}</p>}
+        </section>
 
-      {/* Top Mood Lifters (Song_Impact) */}
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-amber-400" />
-              <h2 className="text-xl font-bold text-white tracking-tight">Top Mood Lifters</h2>
-            </div>
-            <p className="text-xs text-zinc-400 mt-0.5">
-              Derived from <code className="text-teal-400 font-mono">Song_Impact</code> window calculation: tracks that caused positive state shifts (e.g. Stressed &rarr; Calm)
-            </p>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {lifters.length === 0 ? (
-            <div className="p-8 rounded-2xl bg-zinc-900/40 border border-zinc-800 text-center text-zinc-500 text-xs md:col-span-3">
-              Play and rate more songs to record positive shifts into the Song_Impact table!
+        {/* what MoodTide detects */}
+        <section className="lg:col-span-2 rounded-2xl border border-white/10 bg-white/5 p-6">
+          <h2 className="text-lg font-medium">What MoodTide detects</h2>
+          {current && cur ? (
+            <div className="mt-4">
+              <span className={`inline-block rounded-full border px-3 py-1 text-sm ${cur.chip}`}>{cur.label}</span>
+              <dl className="mt-4 grid grid-cols-2 gap-y-3 text-sm">
+                <dt className="text-zinc-400">Mood score</dt>
+                <dd className="text-right">{Math.round(current.mood_score)} / 100</dd>
+                <dt className="text-zinc-400">Time of day</dt>
+                <dd className="text-right capitalize">{current.time_of_day ?? '—'}</dd>
+                <dt className="text-zinc-400">Average energy</dt>
+                <dd className="text-right">{current.avg_energy != null ? Number(current.avg_energy).toFixed(2) : '—'}</dd>
+                <dt className="text-zinc-400">Skips in a row</dt>
+                <dd className="text-right">{current.skip_count ?? 0}</dd>
+              </dl>
+              <p className="mt-4 text-xs text-zinc-500">Updated {fmtDay(current.calculated_at)}, {fmtTime(current.calculated_at)}</p>
             </div>
           ) : (
-            lifters.map((item) => {
-              const song = item.song;
-              if (!song) return null;
-              const isCurrent = currentSong?.song_id === song.song_id;
-              const isPlayingCurrent = isCurrent && isPlaying;
-
-              return (
-                <div
-                  key={item.impact_id}
-                  className="p-4 rounded-xl border border-zinc-800/80 bg-zinc-900/40 hover:bg-zinc-900/70 transition-all flex flex-col justify-between gap-3"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-wider">
-                        Impact #{item.impact_id.slice(-6)}
-                      </span>
-                      <h4 className="text-sm font-bold text-white truncate mt-0.5">{song.title}</h4>
-                      <p className="text-xs text-zinc-400 truncate">{item.artist?.name || 'Artist'}</p>
-                    </div>
-
-                    <button
-                      onClick={() => {
-                        if (isPlayingCurrent) pauseSong();
-                        else if (isCurrent) resumeSong();
-                        else playSong(song, 'playlist');
-                      }}
-                      className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors ${
-                        isPlayingCurrent
-                          ? 'bg-teal-400 text-zinc-950'
-                          : 'bg-zinc-800 text-zinc-300 hover:bg-teal-500 hover:text-zinc-950'
-                      }`}
-                    >
-                      {isPlayingCurrent ? (
-                        <Pause className="w-3.5 h-3.5 fill-current" />
-                      ) : (
-                        <Play className="w-3.5 h-3.5 fill-current ml-0.5" />
-                      )}
-                    </button>
-                  </div>
-
-                  <div className="p-2.5 rounded-lg bg-zinc-950 border border-zinc-800/60 flex items-center justify-between text-xs">
-                    <span className="capitalize font-medium text-rose-300">
-                      {item.mood_before}
-                    </span>
-                    <ArrowUpRight className="w-3.5 h-3.5 text-teal-400" />
-                    <span className="capitalize font-bold text-teal-300">
-                      {item.mood_after}
-                    </span>
-                  </div>
-                </div>
-              );
-            })
+            <p className="mt-4 text-sm text-zinc-400">Nothing detected yet. Save a check-in and your first reading appears here.</p>
           )}
-        </div>
+        </section>
       </div>
+
+      {/* mood mix */}
+      {mix.length > 0 && (
+        <section className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-6">
+          <h2 className="text-lg font-medium">Your mix across {checkins?.length} check-ins</h2>
+          <ul className="mt-4 space-y-3">
+            {mix.map((m) => (
+              <li key={m.label} className="flex items-center gap-3 text-sm">
+                <span className="w-24 shrink-0 text-zinc-300">{m.label}</span>
+                <span className="h-2 flex-1 overflow-hidden rounded-full bg-zinc-800">
+                  <span className={`block h-full rounded-full ${m.meta.dot}`} style={{ width: `${m.pct}%` }} />
+                </span>
+                <span className="w-12 text-right text-zinc-400">{m.pct}%</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {/* history */}
+      <section className="mt-6">
+        <h2 className="text-lg font-medium">Past check-ins</h2>
+        {checkins === null ? (
+          <p className="mt-4 text-sm text-zinc-400">Loading…</p>
+        ) : days.length === 0 ? (
+          <div className="mt-4 rounded-2xl border border-dashed border-white/15 px-6 py-10 text-center text-zinc-400">
+            No check-ins yet. Pick a mood above and save your first one.
+          </div>
+        ) : (
+          <div className="mt-4 space-y-6">
+            {days.map((d) => (
+              <div key={d.day}>
+                <h3 className="text-sm text-zinc-400">{d.day}</h3>
+                <ul className="mt-2 divide-y divide-white/10 rounded-2xl border border-white/10 bg-white/5">
+                  {d.items.map((c) => {
+                    const m = metaOf(c.mood_label);
+                    return (
+                      <li key={c.checkin_id} className="flex items-center gap-4 px-5 py-3">
+                        <span className="w-20 shrink-0 text-sm text-zinc-400">{fmtTime(c.checked_at)}</span>
+                        <span className={`rounded-full border px-3 py-0.5 text-sm ${m.chip}`}>{m.label}</span>
+                        <span className="ml-auto flex items-center gap-3 text-sm text-zinc-400">
+                          {ENERGY_WORDS[c.energy_level - 1] ?? ''}
+                          <EnergyDots level={c.energy_level} />
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 };

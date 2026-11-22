@@ -1,21 +1,8 @@
-/**
- * MoodTide Application Context
- * Central state for database subscription, active playback, audio synthesis,
- * active mood, constraint alerts, and guided tour.
- */
-
-import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
-import { db, ConstraintViolationError, MOOD_COORDINATES } from '../lib/db';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import { authApi, setToken, moodApi, suggestionsApi, activityApi, prefsApi } from '../lib/api';
+import { MOOD_COORDINATES, MoodType } from '../lib/mood';
 import { audioSynth } from '../lib/audioSynthesizer';
-import {
-  DatabaseSchema,
-  User,
-  Song,
-  SongFeatures,
-  MoodType,
-  ConstraintViolation,
-  Playlist,
-} from '../types/database';
+import { ytPlayer } from '../lib/youtubePlayer';
 
 export interface ToastMessage {
   id: string;
@@ -26,461 +13,408 @@ export interface ToastMessage {
 }
 
 interface AppContextType {
-  db: typeof db;
-  schema: DatabaseSchema;
-  currentUser: User;
-  switchUser: (userId: string) => void;
-  loginAs: (email: string) => boolean;
-  logout: () => void;
-  // Playback state
-  currentSong: Song | null;
-  currentFeatures: SongFeatures | null;
+  currentUser: any | null;
+  isAuthenticated: boolean;
+  isLoading: boolean;
+  login: (email: string, password: string) => Promise<boolean>;
+  register: (username: string, email: string, password: string) => Promise<boolean>;
+  logout: () => Promise<void>;
+  // Playback
+  currentSong: any | null;
   isPlaying: boolean;
   progressSec: number;
   volume: number;
-  playSong: (song: Song, source?: 'search' | 'playlist' | 'suggestion', suggestionId?: string | null) => void;
+  playSong: (song: any, source?: string, suggestionId?: string | null) => void;
   pauseSong: () => void;
   resumeSong: () => void;
   seekSong: (sec: number) => void;
   skipSong: () => void;
-  replaySong: () => void;
-  setVolume: (val: number) => void;
-  // Mood state
+  stopSong: () => void;
+  setVolume: (v: number) => void;
+  // Mood & Suggestions
   currentMood: MoodType;
   accentColor: string;
-  checkinMood: (mood: MoodType, energyLevel?: number) => void;
-  runMoodDetection: () => void;
-  // SQL Modal state
+  latestMoodScore: any | null;
+  suggestions: any[];
+  batch: any | null;
+  checkinMood: (mood: MoodType, energy?: number) => Promise<void>;
+  refreshSuggestions: () => Promise<void>;
+  regionPref: string;
+  setRegionPref: (region: string) => Promise<void>;
+  runMoodDetection: () => Promise<void>;
+  rateSong: (songId: string, stars: number, suggestionId?: string | null) => Promise<void>;
+  // UI
+  toasts: ToastMessage[];
+  addToast: (t: Omit<ToastMessage, 'id'>) => void;
+  removeToast: (id: string) => void;
   sqlModal: { isOpen: boolean; title: string; sqlText: string };
   openSqlModal: (title: string, sqlText: string) => void;
   closeSqlModal: () => void;
-  // Toasts
-  toasts: ToastMessage[];
-  addToast: (toast: Omit<ToastMessage, 'id'>) => void;
-  removeToast: (id: string) => void;
-  // Guided Tour
-  tourStep: number | null; // null = inactive, 1-6
+  tourStep: number | null;
   startTour: () => void;
   nextTourStep: () => void;
   exitTour: () => void;
-  // Quick Actions
-  rateSong: (songId: string, stars: number, suggestionId?: string | null) => void;
-  addSongToPlaylist: (playlistId: string, songId: string) => boolean;
-  createNewPlaylist: (name: string, description: string) => Playlist | null;
 }
 
 const AppContext = createContext<AppContextType | null>(null);
 
+// Stop every sound source, so two songs can never play at once
+const stopAllAudio = () => {
+  audioSynth.stop();
+  ytPlayer.stop();
+};
+
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [schema, setSchema] = useState<DatabaseSchema>(db.getSchema());
-  // Default user Fatima (usr_fatima)
-  const [currentUserId, setCurrentUserId] = useState<string>('usr_fatima');
+  const [currentUser, setCurrentUser] = useState<any | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [currentMood, setCurrentMood] = useState<MoodType>('calm');
+  const [latestMoodScore, setLatestMoodScore] = useState<any | null>(null);
+  const [suggestions, setSuggestions] = useState<any[]>([]);
+  const [batch, setBatch] = useState<any | null>(null);
+  const [regionPref, setRegionPrefState] = useState('all');
 
-  // Playback state
-  const [currentSong, setCurrentSong] = useState<Song | null>(null);
-  const [isPlaying, setIsPlaying] = useState<boolean>(false);
-  const [progressSec, setProgressSec] = useState<number>(0);
-  const [volume, setVolumeState] = useState<number>(0.65);
-  const [currentSource, setCurrentSource] = useState<'search' | 'playlist' | 'suggestion'>('suggestion');
+  // Playback
+  const [currentSong, setCurrentSong] = useState<any | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [progressSec, setProgressSec] = useState(0);
+  const [volume, setVolumeState] = useState(0.65);
+  const [currentSource, setCurrentSource] = useState('suggestion');
   const [currentSuggestionId, setCurrentSuggestionId] = useState<string | null>(null);
+  // which engine is playing the current song: real YouTube video, or the generated-tone fallback
+  const engineRef = useRef<'youtube' | 'synth' | null>(null);
 
-  // Toasts
+  // UI
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
-
-  // Guided Tour (1 to 6)
+  const [sqlModal, setSqlModal] = useState({ isOpen: false, title: '', sqlText: '' });
   const [tourStep, setTourStep] = useState<number | null>(null);
-
-  // SQL Modal
-  const [sqlModal, setSqlModal] = useState<{ isOpen: boolean; title: string; sqlText: string }>({
-    isOpen: false,
-    title: '',
-    sqlText: '',
-  });
-
-  // Subscribe to DB changes
-  useEffect(() => {
-    const unsubscribe = db.subscribe(() => {
-      setSchema({ ...db.getSchema() });
-    });
-    return () => {
-      unsubscribe();
-    };
-  }, []);
-
-  const currentUser = useMemo(() => {
-    return schema.users.find((u) => u.user_id === currentUserId) || schema.users[1];
-  }, [schema.users, currentUserId]);
-
-  // Current Mood based on latest detected or checkin
-  const currentMood = useMemo<MoodType>(() => {
-    const latestScore = schema.mood_scores
-      .filter((s) => s.user_id === currentUserId)
-      .sort((a, b) => new Date(b.calculated_at).getTime() - new Date(a.calculated_at).getTime())[0];
-    return latestScore ? latestScore.detected_mood : 'calm';
-  }, [schema.mood_scores, currentUserId]);
 
   const accentColor = MOOD_COORDINATES[currentMood]?.accentColor || 'teal';
 
   const addToast = useCallback((toast: Omit<ToastMessage, 'id'>) => {
-    const id = `tst_${Date.now()}_${Math.random()}`;
+    const id = `tst_${Date.now()}`;
     setToasts((prev) => [...prev, { ...toast, id }]);
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 4500);
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4500);
   }, []);
 
   const removeToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  const currentFeatures = useMemo(() => {
-    if (!currentSong) return null;
-    return schema.song_features.find((f) => f.song_id === currentSong.song_id) || null;
-  }, [currentSong, schema.song_features]);
-
-  // Handle Playback Interval
+  // Load user + data on mount
   useEffect(() => {
-    let interval: number;
-    if (isPlaying && currentSong) {
-      interval = window.setInterval(() => {
-        setProgressSec((prev) => {
-          if (prev >= currentSong.duration_sec) {
-            // Trigger song completion in DB
-            db.triggerOnSongPlay(
-              currentUser.user_id,
-              currentSong.song_id,
-              currentSong.duration_sec,
-              true,
-              currentSource,
-              currentSuggestionId
-            );
-            addToast({
-              type: 'trigger',
-              title: 'Trigger: onSongPlay Finished',
-              message: `Completed "${currentSong.title}". Recorded into Listening_History & updated User_Taste_Profile (+1 signal).`,
-            });
-            audioSynth.stop();
-            setIsPlaying(false);
-            return 0;
-          }
-          return prev + 1;
-        });
-      }, 1000);
-    }
-    return () => clearInterval(interval);
-  }, [isPlaying, currentSong, currentUser.user_id, currentSource, currentSuggestionId, addToast]);
-
-  const playSong = useCallback(
-    (song: Song, source: 'search' | 'playlist' | 'suggestion' = 'suggestion', suggestionId: string | null = null) => {
-      setCurrentSong(song);
-      setCurrentSource(source);
-      setCurrentSuggestionId(suggestionId);
-      setProgressSec(0);
-      setIsPlaying(true);
-
-      const feat = schema.song_features.find((f) => f.song_id === song.song_id);
-      if (feat) {
-        audioSynth.playTrack({ energy: feat.energy, happiness: feat.happiness, tempo: feat.tempo });
+    (async () => {
+      try {
+        const token = localStorage.getItem('moodtide_token');
+        if (token) {
+          const user = await authApi.me();
+          setCurrentUser(user);
+          await loadUserData();
+        }
+      } catch {
+        setToken(null);
+      } finally {
+        setIsLoading(false);
       }
-
-      // If user plays during tour step 2, move tour to step 3!
-      if (tourStep === 2) {
-        setTourStep(3);
-      }
-    },
-    [schema.song_features, tourStep]
-  );
-
-  const pauseSong = useCallback(() => {
-    setIsPlaying(false);
-    audioSynth.pause();
+    })();
   }, []);
 
-  const resumeSong = useCallback(() => {
-    if (currentSong) {
-      setIsPlaying(true);
-      const feat = schema.song_features.find((f) => f.song_id === currentSong.song_id);
-      if (feat) {
-        audioSynth.playTrack({ energy: feat.energy, happiness: feat.happiness, tempo: feat.tempo });
+  async function loadUserData() {
+    try {
+      const [mood, sug, prefs] = await Promise.all([
+        moodApi.current().catch(() => null),
+        suggestionsApi.list().catch(() => ({ batch: null, suggestions: [] })),
+        prefsApi.get().catch(() => ({ region: 'all' })),
+      ]);
+      if (mood?.detected_mood) {
+        setCurrentMood(mood.detected_mood);
+        setLatestMoodScore(mood);
       }
+      setBatch(sug.batch);
+      setSuggestions(sug.suggestions || []);
+      setRegionPrefState(prefs?.region ?? 'all');
+    } catch (e) {
+      console.error('Failed to load user data', e);
     }
-  }, [currentSong, schema.song_features]);
+  }
 
-  const seekSong = useCallback((sec: number) => {
-    setProgressSec(sec);
-  }, []);
+  const login = async (email: string, password: string) => {
+    try {
+      const { token, user } = await authApi.login(email, password);
+      setToken(token);
+      setCurrentUser(user);
+      await loadUserData();
+      addToast({ type: 'success', title: 'Signed in', message: `Welcome back, ${user.username}` });
+      return true;
+    } catch (e: any) {
+      addToast({ type: 'error', title: 'Login failed', message: e.message });
+      return false;
+    }
+  };
 
-  const skipSong = useCallback(() => {
-    if (!currentSong) return;
-    const listened = progressSec;
-    audioSynth.stop();
+  const register = async (username: string, email: string, password: string) => {
+    try {
+      const { token, user } = await authApi.register(username, email, password);
+      setToken(token);
+      setCurrentUser(user);
+      await loadUserData();
+      addToast({ type: 'success', title: 'Account created', message: `Welcome, ${user.username}` });
+      return true;
+    } catch (e: any) {
+      addToast({ type: 'error', title: 'Registration failed', message: e.message });
+      return false;
+    }
+  };
+
+  const logout = async () => {
+    try { await authApi.logout(); } catch {}
+    stopAllAudio();
+    engineRef.current = null;
+    setCurrentSong(null);
     setIsPlaying(false);
+    setProgressSec(0);
+    setCurrentUser(null);
+    setSuggestions([]);
+    setBatch(null);
+    setLatestMoodScore(null);
+    setCurrentMood('calm');
+    setRegionPrefState('all');
+    addToast({ type: 'info', title: 'Signed out', message: 'Session closed' });
+  };
 
-    db.triggerOnSongPlay(
-      currentUser.user_id,
-      currentSong.song_id,
-      listened,
-      false, // completed = false
-      currentSource,
-      currentSuggestionId,
-      false
-    );
-
-    addToast({
-      type: 'trigger',
-      title: 'Trigger: Skip Recorded',
-      message: `Skipped "${currentSong.title}" at ${listened}s. PostgreSQL trigger logged skip signal (-1) and updated Listening_History.`,
-    });
-
-    // Pick next song in suggestion feed
-    const remainingSuggestions = schema.suggestions.filter((s) => s.song_id !== currentSong.song_id);
-    if (remainingSuggestions.length > 0) {
-      const nextSong = schema.songs.find((s) => s.song_id === remainingSuggestions[0].song_id);
-      if (nextSong) {
-        playSong(nextSong, 'suggestion', remainingSuggestions[0].suggestion_id);
+  const checkinMood = async (mood: MoodType, energy = 3) => {
+    try {
+      const out = await moodApi.createCheckin(mood, energy);
+      setCurrentMood(mood);
+      if (out.detected) {
+        setLatestMoodScore(out.detected);
+        if (out.detected.detected_mood) setCurrentMood(out.detected.detected_mood);
       }
+      // Refresh suggestions after check-in
+      const sug = await suggestionsApi.list();
+      setBatch(sug.batch);
+      setSuggestions(sug.suggestions || []);
+      addToast({
+        type: 'success',
+        title: 'Mood checked in',
+        message: `Logged "${mood}" (energy ${energy}/5). Suggestions refreshed.`,
+      });
+      if (tourStep === 1) setTourStep(2);
+    } catch (e: any) {
+      addToast({ type: 'error', title: 'Check-in failed', message: e.message });
     }
+  };
 
-    if (tourStep === 3) {
-      setTourStep(4);
+  const refreshSuggestions = async () => {
+    try {
+      await suggestionsApi.generate();
+      const sug = await suggestionsApi.list();
+      setBatch(sug.batch);
+      setSuggestions(sug.suggestions || []);
+      addToast({ type: 'info', title: 'Suggestions refreshed', message: 'New recommendation batch ready' });
+    } catch (e: any) {
+      addToast({ type: 'error', title: 'Refresh failed', message: e.message });
     }
-  }, [currentSong, progressSec, currentUser.user_id, currentSource, currentSuggestionId, schema.suggestions, schema.songs, playSong, addToast, tourStep]);
+  };
 
-  const replaySong = useCallback(() => {
-    if (!currentSong) return;
+  const runMoodDetection = async () => {
+    try {
+      const result = await moodApi.detect();
+      if (result?.detected_mood) {
+        setCurrentMood(result.detected_mood);
+        setLatestMoodScore(result);
+      }
+      await refreshSuggestions();
+    } catch (e: any) {
+      addToast({ type: 'error', title: 'Mood detection failed', message: e.message });
+    }
+  };
+
+  // which kind of music the user wants: all / pakistani / punjabi / asian / international
+  const setRegionPref = async (region: string) => {
+    try {
+      await prefsApi.setRegion(region);
+      setRegionPrefState(region);
+      await suggestionsApi.generate();
+      const sug = await suggestionsApi.list();
+      setBatch(sug.batch);
+      setSuggestions(sug.suggestions || []);
+    } catch (e: any) {
+      addToast({ type: 'error', title: 'Could not save your choice', message: e.message });
+    }
+  };
+
+  const rateSong = async (songId: string, stars: number, suggestionId: string | null = null) => {
+    try {
+      await activityApi.rate(songId, stars, suggestionId);
+      addToast({ type: 'success', title: `Rated ${stars}★`, message: 'Rating saved' });
+      if (tourStep === 4) setTourStep(5);
+    } catch (e: any) {
+      addToast({ type: 'error', title: 'Rating failed', message: e.message });
+    }
+  };
+
+  // ---------- Playback ----------
+  const playSong = useCallback((song: any, source = 'suggestion', suggestionId: string | null = null) => {
+    stopAllAudio(); // stop whatever was playing before
+    setCurrentSong(song);
+    setCurrentSource(source);
+    setCurrentSuggestionId(suggestionId);
     setProgressSec(0);
     setIsPlaying(true);
-    const feat = schema.song_features.find((f) => f.song_id === currentSong.song_id);
-    if (feat) {
-      audioSynth.playTrack({ energy: feat.energy, happiness: feat.happiness, tempo: feat.tempo });
-    }
 
-    db.triggerOnSongPlay(
-      currentUser.user_id,
-      currentSong.song_id,
-      0,
-      false,
-      currentSource,
-      currentSuggestionId,
-      true // isReplay
-    );
-
-    addToast({
-      type: 'trigger',
-      title: 'Trigger: Replay Signal (+2)',
-      message: `Replaying "${currentSong.title}". Trigger updated Implicit_Signals (+2) and reinforced genre affinity.`,
-    });
-  }, [currentSong, schema.song_features, currentUser.user_id, currentSource, currentSuggestionId, addToast]);
-
-  const setVolume = useCallback((val: number) => {
-    setVolumeState(val);
-    audioSynth.setVolume(val);
-  }, []);
-
-  const checkinMood = useCallback(
-    (mood: MoodType, energyLevel = 3) => {
-      try {
-        db.checkinMood(currentUser.user_id, mood, energyLevel);
-        addToast({
-          type: 'success',
-          title: 'Mood Check-in Saved',
-          message: `Logged mood "${mood}" (energy ${energyLevel}/5). detectMood() stored procedure evaluated and refreshed recommendations!`,
-        });
-        if (tourStep === 1) {
-          setTourStep(2);
-        }
-      } catch (err: unknown) {
-        if (err instanceof ConstraintViolationError) {
-          addToast({ type: 'error', title: 'Constraint Error', message: err.message });
-        }
-      }
-    },
-    [currentUser.user_id, addToast, tourStep]
-  );
-
-  const runMoodDetection = useCallback(() => {
-    const result = db.detectMood(currentUser.user_id);
-    addToast({
-      type: 'info',
-      title: 'Stored Procedure: detectMood() Executed',
-      message: result.ruleFired,
-    });
-    db.generateSuggestions(currentUser.user_id);
-  }, [currentUser.user_id, addToast]);
-
-  const rateSong = useCallback(
-    (songId: string, stars: number, suggestionId: string | null = null) => {
-      try {
-        db.triggerOnSongRate(currentUser.user_id, songId, stars, suggestionId);
-        const songName = schema.songs.find((s) => s.song_id === songId)?.title || 'Song';
-        addToast({
-          type: 'success',
-          title: `Rated ${stars} Stars`,
-          message: `Stored procedure inserted into Ratings, logged signal (${stars - 3}), and adapted User_Taste_Profile for "${songName}".`,
-        });
-        if (tourStep === 4) {
-          setTourStep(5);
-        }
-      } catch (err: unknown) {
-        if (err instanceof ConstraintViolationError) {
-          addToast({
-            type: 'error',
-            title: `Constraint Violation [${err.violation.type}]`,
-            message: err.violation.message,
-          });
-        }
-      }
-    },
-    [currentUser.user_id, schema.songs, addToast, tourStep]
-  );
-
-  const addSongToPlaylist = useCallback(
-    (playlistId: string, songId: string): boolean => {
-      try {
-        db.triggerOnPlaylistAdd(playlistId, songId, currentUser.user_id);
-        const plName = schema.playlists.find((p) => p.playlist_id === playlistId)?.name || 'Playlist';
-        addToast({
-          type: 'success',
-          title: 'Added to Playlist',
-          message: `Track linked to "${plName}". Unique constraint validated. Signal (+2) recorded.`,
-        });
-        return true;
-      } catch (err: unknown) {
-        if (err instanceof ConstraintViolationError) {
-          addToast({
-            type: 'error',
-            title: `PostgreSQL Constraint Rejected [${err.violation.type}]`,
-            message: err.violation.message,
-          });
-        }
-        return false;
-      }
-    },
-    [currentUser.user_id, schema.playlists, addToast]
-  );
-
-  const createNewPlaylist = useCallback(
-    (name: string, description: string): Playlist | null => {
-      try {
-        const playlistId = `pl_${Date.now()}`;
-        const newPl: Playlist = {
-          playlist_id: playlistId,
-          user_id: currentUser.user_id,
-          name,
-          description,
-          playlist_type: 'normal',
-          start_mood: null,
-          target_mood: null,
-          created_at: new Date().toISOString(),
-        };
-        db.validateConstraint('playlists', newPl as unknown as Record<string, unknown>, 'INSERT');
-        db.getSchema().playlists.unshift(newPl);
-        db.getSchema().audit_log.unshift({
-          log_id: `aud_${Date.now()}`,
-          user_id: currentUser.user_id,
-          table_name: 'Playlists',
-          record_id: playlistId,
-          action: 'INSERT',
-          old_data: null,
-          new_data: JSON.stringify(newPl),
-          changed_at: new Date().toISOString(),
-        });
-        // trigger subscription update
-        db.resetDatabase = db.resetDatabase.bind(db);
-        addToast({
-          type: 'success',
-          title: 'Playlist Created',
-          message: `Created "${name}" in table Playlists with Foreign Key to user "${currentUser.username}".`,
-        });
-        return newPl;
-      } catch (err: unknown) {
-        if (err instanceof ConstraintViolationError) {
-          addToast({
-            type: 'error',
-            title: `Constraint Error [${err.violation.type}]`,
-            message: err.violation.message,
-          });
-        }
-        return null;
-      }
-    },
-    [currentUser, addToast]
-  );
-
-  const switchUser = useCallback((userId: string) => {
-    setCurrentUserId(userId);
-    db.generateSuggestions(userId);
-  }, []);
-
-  const loginAs = useCallback(
-    (email: string) => {
-      const u = schema.users.find((user) => user.email.toLowerCase() === email.toLowerCase());
-      if (u) {
-        setCurrentUserId(u.user_id);
-        db.generateSuggestions(u.user_id);
-        addToast({
-          type: 'success',
-          title: 'Authenticated Session',
-          message: `Signed in as ${u.username} (${u.role_id === 'rol_1' ? 'Admin' : 'User'} · Cohort ${u.experiment_group}).`,
-        });
-        return true;
-      }
-      addToast({
-        type: 'error',
-        title: 'Authentication Failed',
-        message: 'No user found with email ' + email,
+    if (song.external_id) {
+      // real song: play the YouTube video
+      engineRef.current = 'youtube';
+      ytPlayer.play(String(song.external_id)).catch((e: any) => {
+        setIsPlaying(false);
+        addToast({ type: 'error', title: 'Player failed', message: e?.message || 'Could not start the YouTube player' });
       });
-      return false;
-    },
-    [schema.users, addToast]
-  );
+    } else {
+      // no video id: fall back to the generated tone
+      engineRef.current = 'synth';
+      if (song.energy != null) {
+        audioSynth.playTrack({ energy: song.energy, happiness: song.happiness, tempo: song.tempo });
+      }
+    }
+    if (tourStep === 2) setTourStep(3);
+  }, [tourStep, addToast]);
 
-  const logout = useCallback(() => {
-    // Default back to Fatima
-    setCurrentUserId('usr_fatima');
-    addToast({
-      type: 'info',
-      title: 'Signed Out',
-      message: 'Active session closed. Switched to public guest mode.',
+  const pauseSong = () => {
+    setIsPlaying(false);
+    audioSynth.pause();
+    ytPlayer.pause();
+  };
+
+  const resumeSong = () => {
+    if (!currentSong) return;
+    setIsPlaying(true);
+    if (engineRef.current === 'youtube') {
+      ytPlayer.resume();
+    } else {
+      audioSynth.playTrack({ energy: currentSong.energy, happiness: currentSong.happiness, tempo: currentSong.tempo });
+    }
+  };
+
+  // Cross button: stop everything and close the player. Not recorded as a skip,
+  // so it does not affect mood detection.
+  const stopSong = () => {
+    stopAllAudio();
+    engineRef.current = null;
+    setIsPlaying(false);
+    setProgressSec(0);
+    setCurrentSong(null);
+    setCurrentSuggestionId(null);
+  };
+
+  const seekSong = (sec: number) => {
+    setProgressSec(sec);
+    if (engineRef.current === 'youtube') ytPlayer.seek(sec);
+  };
+
+  const setVolume = (v: number) => {
+    setVolumeState(v);
+    audioSynth.setVolume(v);
+    ytPlayer.setVolume(v);
+  };
+
+  const skipSong = async () => {
+    if (!currentSong) return;
+    stopAllAudio();
+    setIsPlaying(false);
+    try {
+      await activityApi.recordPlay({
+        songId: currentSong.song_id,
+        listenedSec: progressSec,
+        completed: false,
+        source: currentSource,
+        suggestionId: currentSuggestionId,
+      });
+    } catch {}
+    // play next suggestion if available
+    const idx = suggestions.findIndex((s) => s.song_id === currentSong.song_id);
+    if (idx >= 0 && idx < suggestions.length - 1) {
+      playSong(suggestions[idx + 1], 'suggestion', suggestions[idx + 1].suggestion_id);
+    }
+    if (tourStep === 3) setTourStep(4);
+  };
+
+  // Listen to the YouTube player: keep play/pause in sync, save finished songs, skip blocked videos
+  useEffect(() => {
+    ytPlayer.setHandlers({
+      onState: (s) => {
+        if (engineRef.current !== 'youtube') return;
+        if (s === 1) setIsPlaying(true);
+        else if (s === 2) setIsPlaying(false);
+      },
+      onEnded: () => {
+        if (engineRef.current !== 'youtube' || !currentSong) return;
+        activityApi.recordPlay({
+          songId: currentSong.song_id,
+          listenedSec: currentSong.duration_sec,
+          completed: true,
+          source: currentSource,
+          suggestionId: currentSuggestionId,
+        }).catch(() => {});
+        setIsPlaying(false);
+        setProgressSec(0);
+      },
+      onError: (code) => {
+        if (engineRef.current !== 'youtube') return;
+        addToast({
+          type: 'error',
+          title: "Can't play this video",
+          message: code === 101 || code === 150
+            ? 'The owner does not allow it outside YouTube. Trying the next song.'
+            : 'YouTube could not play it. Trying the next song.',
+        });
+        const idx = suggestions.findIndex((s) => s.song_id === currentSong?.song_id);
+        if (idx >= 0 && idx < suggestions.length - 1) {
+          playSong(suggestions[idx + 1], 'suggestion', suggestions[idx + 1].suggestion_id);
+        } else {
+          setIsPlaying(false);
+        }
+      },
     });
-  }, [addToast]);
+  }, [currentSong, currentSource, currentSuggestionId, suggestions, playSong, addToast]);
 
-  const openSqlModal = useCallback((title: string, sqlText: string) => {
-    setSqlModal({ isOpen: true, title, sqlText });
-  }, []);
-
-  const closeSqlModal = useCallback(() => {
-    setSqlModal((prev) => ({ ...prev, isOpen: false }));
-  }, []);
-
-  const startTour = useCallback(() => {
-    setTourStep(1);
-    addToast({
-      type: 'info',
-      title: 'Demo Tour Started (Step 1 of 6)',
-      message: 'Follow the glowing prompt to check in your current mood.',
-    });
-  }, [addToast]);
-
-  const nextTourStep = useCallback(() => {
-    setTourStep((prev) => (prev ? (prev < 6 ? prev + 1 : null) : null));
-  }, []);
-
-  const exitTour = useCallback(() => {
-    setTourStep(null);
-  }, []);
+  // Progress ticker
+  useEffect(() => {
+    if (!isPlaying || !currentSong) return;
+    const id = window.setInterval(() => {
+      if (engineRef.current === 'youtube') {
+        // real position comes from the YouTube player
+        setProgressSec(Math.floor(ytPlayer.getTime()));
+        return;
+      }
+      setProgressSec((prev) => {
+        if (prev >= (currentSong.duration_sec || 180)) {
+          activityApi.recordPlay({
+            songId: currentSong.song_id,
+            listenedSec: currentSong.duration_sec,
+            completed: true,
+            source: currentSource,
+            suggestionId: currentSuggestionId,
+          }).catch(() => {});
+          audioSynth.stop();
+          setIsPlaying(false);
+          return 0;
+        }
+        return prev + 1;
+      });
+    }, 1000);
+    return () => clearInterval(id);
+  }, [isPlaying, currentSong, currentSource, currentSuggestionId]);
 
   return (
     <AppContext.Provider
       value={{
-        db,
-        schema,
         currentUser,
-        switchUser,
-        loginAs,
+        isAuthenticated: !!currentUser,
+        isLoading,
+        login,
+        register,
         logout,
         currentSong,
-        currentFeatures,
         isPlaying,
         progressSec,
         volume,
@@ -489,25 +423,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         resumeSong,
         seekSong,
         skipSong,
-        replaySong,
+        stopSong,
         setVolume,
         currentMood,
         accentColor,
+        latestMoodScore,
+        suggestions,
+        batch,
         checkinMood,
+        refreshSuggestions,
+        regionPref,
+        setRegionPref,
         runMoodDetection,
-        sqlModal,
-        openSqlModal,
-        closeSqlModal,
+        rateSong,
         toasts,
         addToast,
         removeToast,
+        sqlModal,
+        openSqlModal: (title, sqlText) => setSqlModal({ isOpen: true, title, sqlText }),
+        closeSqlModal: () => setSqlModal((p) => ({ ...p, isOpen: false })),
         tourStep,
-        startTour,
-        nextTourStep,
-        exitTour,
-        rateSong,
-        addSongToPlaylist,
-        createNewPlaylist,
+        startTour: () => setTourStep(1),
+        nextTourStep: () => setTourStep((p) => (p && p < 6 ? p + 1 : null)),
+        exitTour: () => setTourStep(null),
       }}
     >
       {children}
@@ -516,9 +454,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 };
 
 export const useApp = () => {
-  const context = useContext(AppContext);
-  if (!context) {
-    throw new Error('useApp must be used within an AppProvider');
-  }
-  return context;
+  const ctx = useContext(AppContext);
+  if (!ctx) throw new Error('useApp must be used within AppProvider');
+  return ctx;
 };

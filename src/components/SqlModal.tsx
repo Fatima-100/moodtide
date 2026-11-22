@@ -1,22 +1,43 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { X, Copy, Check, Terminal, Database } from 'lucide-react';
 
 export const SqlModal: React.FC = () => {
   const { sqlModal, closeSqlModal } = useApp();
   const [copied, setCopied] = useState(false);
+  // Close with the Escape key
+  useEffect(() => {
+    if (!sqlModal.isOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeSqlModal();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [sqlModal.isOpen, closeSqlModal]);
 
   if (!sqlModal.isOpen) return null;
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(sqlModal.sqlText);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(sqlModal.sqlText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard blocked by the browser: the SQL text is click-to-select, so the user can copy it by hand
+    }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="relative w-full max-w-3xl max-h-[85vh] flex flex-col bg-zinc-950 border border-zinc-800 rounded-2xl shadow-2xl overflow-hidden">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200"
+      role="dialog"
+      aria-modal="true"
+      onClick={closeSqlModal}
+    >
+      <div
+        className="relative w-full max-w-3xl max-h-[85vh] flex flex-col bg-zinc-950 border border-zinc-800 rounded-2xl shadow-2xl overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800 bg-zinc-900/60">
           <div className="flex items-center gap-3">
@@ -39,6 +60,7 @@ export const SqlModal: React.FC = () => {
             </button>
             <button
               onClick={closeSqlModal}
+              aria-label="Close"
               className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 transition-colors"
             >
               <X className="w-5 h-5" />

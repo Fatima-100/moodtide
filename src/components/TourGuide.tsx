@@ -7,7 +7,7 @@ interface TourGuideProps {
 }
 
 export const TourGuide: React.FC<TourGuideProps> = ({ onNavigateTab }) => {
-  const { tourStep, nextTourStep, exitTour, openSqlModal } = useApp();
+  const { tourStep, nextTourStep, exitTour } = useApp();
 
   if (!tourStep) return null;
 
@@ -75,7 +75,7 @@ export const TourGuide: React.FC<TourGuideProps> = ({ onNavigateTab }) => {
   };
 
   return (
-    <div className="fixed top-20 right-6 z-50 max-w-sm w-full bg-zinc-900 border-2 border-teal-500/80 rounded-2xl shadow-2xl p-5 text-zinc-100 backdrop-blur-md animate-in fade-in slide-in-from-right-4">
+    <div className="fixed top-24 left-4 right-4 sm:left-auto sm:right-6 z-50 sm:max-w-sm sm:w-full bg-zinc-900 border-2 border-teal-500/80 rounded-2xl shadow-2xl p-5 text-zinc-100 backdrop-blur-md animate-in fade-in slide-in-from-right-4">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-2 text-teal-400 font-semibold text-xs tracking-wider uppercase font-mono">
           <Sparkles className="w-4 h-4" />
@@ -83,6 +83,7 @@ export const TourGuide: React.FC<TourGuideProps> = ({ onNavigateTab }) => {
         </div>
         <button
           onClick={exitTour}
+          aria-label="End tour"
           className="p-1 rounded-md text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
         >
           <X className="w-4 h-4" />

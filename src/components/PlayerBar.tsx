@@ -1,45 +1,45 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { useViewMode } from '../lib/viewMode';
+import { playlistsApi } from '../lib/api';
+import { ytPlayer } from '../lib/youtubePlayer';
 import {
-  Play,
-  Pause,
-  SkipForward,
-  RotateCcw,
-  Volume2,
-  VolumeX,
-  ListPlus,
-  Music,
-  Check,
-  Plus,
+  Play, Pause, SkipForward, RotateCcw, Volume2, VolumeX, ListPlus, Music,
+  Check, Plus, Video, VideoOff, ExternalLink, X,
 } from 'lucide-react';
 
 export const PlayerBar: React.FC = () => {
   const {
-    currentSong,
-    currentFeatures,
-    isPlaying,
-    progressSec,
-    volume,
-    schema,
-    currentUser,
-    pauseSong,
-    resumeSong,
-    seekSong,
-    skipSong,
-    replaySong,
-    setVolume,
-    addSongToPlaylist,
-    createNewPlaylist,
+    currentSong, isPlaying, progressSec, volume,
+    pauseSong, resumeSong, seekSong, skipSong, stopSong, setVolume, addToast,
   } = useApp();
 
   const [playlistMenuOpen, setPlaylistMenuOpen] = useState(false);
+  const [playlists, setPlaylists] = useState<any[]>([]);
   const [newPlaylistName, setNewPlaylistName] = useState('');
   const [showNewInput, setShowNewInput] = useState(false);
+  const [videoVisible, setVideoVisible] = useState(ytPlayer.isVisible());
+  const [hiddenByStop, setHiddenByStop] = useState(false);
+  const { simple } = useViewMode();
+
+  // load the user's playlists from the backend each time the menu opens
+  useEffect(() => {
+    if (!playlistMenuOpen) return;
+    playlistsApi.list().then(setPlaylists).catch(() => setPlaylists([]));
+  }, [playlistMenuOpen]);
+
+  // the cross hides the video box; bring it back when the next song starts
+  useEffect(() => {
+    if (currentSong && hiddenByStop) {
+      ytPlayer.setVisible(true);
+      setVideoVisible(true);
+      setHiddenByStop(false);
+    }
+  }, [currentSong, hiddenByStop]);
 
   if (!currentSong) return null;
 
-  const artist = schema.artists.find((a) => a.artist_id === currentSong.artist_id);
-  const userPlaylists = schema.playlists.filter((p) => p.user_id === currentUser.user_id);
+  const hasVideo = !!currentSong.external_id;
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -47,31 +47,61 @@ export const PlayerBar: React.FC = () => {
     return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
   };
 
-  const handleAddTrack = (playlistId: string) => {
-    const success = addSongToPlaylist(playlistId, currentSong.song_id);
-    if (success) {
+  const toggleVideo = () => {
+    const next = !videoVisible;
+    setVideoVisible(next);
+    ytPlayer.setVisible(next);
+  };
+
+  const replay = () => {
+    seekSong(0);
+    resumeSong();
+  };
+
+  // cross button: stop the music, close the bar and hide the video box
+  const closePlayer = () => {
+    setPlaylistMenuOpen(false);
+    setHiddenByStop(true);
+    stopSong();
+    ytPlayer.setVisible(false);
+  };
+
+  const handleAddTrack = async (playlistId: string) => {
+    try {
+      await playlistsApi.addSong(playlistId, currentSong.song_id);
+      addToast({ type: 'success', title: 'Added', message: 'Song added to the playlist' });
       setPlaylistMenuOpen(false);
+    } catch (e: any) {
+      addToast({ type: 'error', title: 'Could not add song', message: e.message });
     }
   };
 
-  const handleCreateAndAdd = () => {
-    if (!newPlaylistName.trim()) return;
-    const pl = createNewPlaylist(newPlaylistName.trim(), 'Created from player');
-    if (pl) {
-      addSongToPlaylist(pl.playlist_id, currentSong.song_id);
+  const handleCreateAndAdd = async () => {
+    const name = newPlaylistName.trim();
+    if (!name) return;
+    try {
+      const { playlist_id } = await playlistsApi.create(name, 'Created from player');
+      await playlistsApi.addSong(playlist_id, currentSong.song_id);
+      addToast({ type: 'success', title: 'Playlist created', message: `Added to "${name}"` });
       setNewPlaylistName('');
       setShowNewInput(false);
       setPlaylistMenuOpen(false);
+    } catch (e: any) {
+      addToast({ type: 'error', title: 'Could not create playlist', message: e.message });
     }
   };
 
   return (
     <div className="fixed bottom-0 left-0 right-0 z-40 bg-zinc-950/95 border-t border-zinc-800/80 backdrop-blur-xl shadow-2xl px-4 py-3">
-      <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+      <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2 sm:gap-4">
         {/* Track Info */}
         <div className="flex items-center gap-3 w-full sm:w-1/3 min-w-0">
           <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-zinc-800 to-zinc-900 border border-zinc-700/60 flex items-center justify-center text-teal-400 shrink-0 shadow-inner relative overflow-hidden">
-            <Music className="w-5 h-5" />
+            {currentSong.cover_url ? (
+              <img src={currentSong.cover_url} alt="" className="w-full h-full object-cover" />
+            ) : (
+              <Music className="w-5 h-5" />
+            )}
             {isPlaying && (
               <div className="absolute inset-x-0 bottom-0 flex items-end justify-center gap-0.5 h-3 px-1 pb-0.5 bg-black/40">
                 <span className="w-1 bg-teal-400 animate-pulse h-2 rounded-t" />
@@ -84,15 +114,20 @@ export const PlayerBar: React.FC = () => {
           <div className="flex flex-col min-w-0">
             <div className="flex items-center gap-2">
               <h4 className="text-sm font-semibold text-zinc-100 truncate">{currentSong.title}</h4>
+              {currentSong.external_url && (
+                <a href={currentSong.external_url} target="_blank" rel="noreferrer" title="Open on YouTube" className="text-zinc-500 hover:text-teal-300 shrink-0">
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              )}
             </div>
-            <p className="text-xs text-zinc-400 truncate">{artist?.name || 'Unknown Artist'}</p>
-            {currentFeatures && (
+            <p className="text-xs text-zinc-400 truncate">{currentSong.artist || 'Unknown Artist'}</p>
+            {currentSong.energy != null && !simple && (
               <div className="flex items-center gap-2 text-[10px] text-zinc-500 font-mono mt-0.5">
-                <span>{currentFeatures.tempo} BPM</span>
+                <span>{currentSong.tempo} BPM</span>
                 <span>·</span>
-                <span>Energy {(currentFeatures.energy * 100).toFixed(0)}%</span>
+                <span>Energy {(currentSong.energy * 100).toFixed(0)}%</span>
                 <span>·</span>
-                <span>Happiness {(currentFeatures.happiness * 100).toFixed(0)}%</span>
+                <span>Happiness {(currentSong.happiness * 100).toFixed(0)}%</span>
               </div>
             )}
           </div>
@@ -101,16 +136,13 @@ export const PlayerBar: React.FC = () => {
         {/* Player Controls & Progress Bar */}
         <div className="flex flex-col items-center gap-1.5 w-full sm:w-1/2 max-w-xl">
           <div className="flex items-center gap-4">
-            <button
-              onClick={replaySong}
-              title="Replay Song (Triggers +2 implicit signal in database)"
-              className="p-1.5 rounded-full text-zinc-400 hover:text-white hover:bg-zinc-800/80 transition-colors"
-            >
+            <button onClick={replay} title="Replay song" aria-label="Replay song" className="p-1.5 rounded-full text-zinc-400 hover:text-white hover:bg-zinc-800/80 transition-colors">
               <RotateCcw className="w-4 h-4" />
             </button>
 
             <button
               onClick={isPlaying ? pauseSong : resumeSong}
+              aria-label={isPlaying ? 'Pause' : 'Play'}
               className="w-9 h-9 rounded-full bg-white hover:bg-zinc-200 text-zinc-950 flex items-center justify-center transition-all shadow-md active:scale-95"
             >
               {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current ml-0.5" />}
@@ -118,7 +150,8 @@ export const PlayerBar: React.FC = () => {
 
             <button
               onClick={skipSong}
-              title="Skip Song (Triggers -1 implicit signal; 3 skips fires Stressed mood rule!)"
+              title={simple ? 'Skip song' : 'Skip Song (counts as a skip in your listening history)'}
+              aria-label="Skip song"
               className="p-1.5 rounded-full text-zinc-400 hover:text-white hover:bg-zinc-800/80 transition-colors"
             >
               <SkipForward className="w-4 h-4" />
@@ -131,7 +164,7 @@ export const PlayerBar: React.FC = () => {
               type="range"
               min={0}
               max={currentSong.duration_sec}
-              value={progressSec}
+              value={Math.min(progressSec, currentSong.duration_sec)}
               onChange={(e) => seekSong(Number(e.target.value))}
               className="flex-1 h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-teal-400"
             />
@@ -139,14 +172,26 @@ export const PlayerBar: React.FC = () => {
           </div>
         </div>
 
-        {/* Volume & Playlist Actions */}
+        {/* Video, Playlist, Volume & Close */}
         <div className="flex items-center justify-end gap-3 w-full sm:w-1/3">
+          {hasVideo && (
+            <button
+              onClick={toggleVideo}
+              title={videoVisible ? 'Hide video' : 'Show video'}
+              aria-label={videoVisible ? 'Hide video' : 'Show video'}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-xs font-medium text-zinc-300 transition-colors"
+            >
+              {videoVisible ? <Video className="w-3.5 h-3.5 text-teal-400" /> : <VideoOff className="w-3.5 h-3.5 text-zinc-500" />}
+              <span className="hidden md:inline">Video</span>
+            </button>
+          )}
+
           {/* Add to Playlist button */}
           <div className="relative">
             <button
               onClick={() => setPlaylistMenuOpen(!playlistMenuOpen)}
               className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-xs font-medium text-zinc-300 transition-colors"
-              title="Add to relational playlist"
+              title="Add to playlist"
             >
               <ListPlus className="w-3.5 h-3.5 text-teal-400" />
               <span className="hidden md:inline">Add to Playlist</span>
@@ -154,30 +199,21 @@ export const PlayerBar: React.FC = () => {
 
             {playlistMenuOpen && (
               <div className="absolute right-0 bottom-full mb-2 w-64 bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl p-2 z-50 animate-in fade-in slide-in-from-bottom-2">
-                <div className="px-3 py-1.5 border-b border-zinc-800 text-xs font-semibold text-zinc-300">
-                  Select Playlist
-                </div>
+                <div className="px-3 py-1.5 border-b border-zinc-800 text-xs font-semibold text-zinc-300">Select Playlist</div>
                 <div className="max-h-48 overflow-y-auto py-1">
-                  {userPlaylists.length === 0 ? (
+                  {playlists.length === 0 ? (
                     <p className="px-3 py-2 text-xs text-zinc-500">No playlists created yet.</p>
                   ) : (
-                    userPlaylists.map((pl) => {
-                      const isAlreadyIn = schema.playlist_songs.some(
-                        (ps) => ps.playlist_id === pl.playlist_id && ps.song_id === currentSong.song_id
-                      );
-                      return (
-                        <button
-                          key={pl.playlist_id}
-                          onClick={() => handleAddTrack(pl.playlist_id)}
-                          className="w-full flex items-center justify-between px-3 py-1.5 rounded-lg text-xs text-left text-zinc-300 hover:bg-zinc-800 transition-colors"
-                        >
-                          <span className="truncate">{pl.name}</span>
-                          {isAlreadyIn && (
-                            <span className="text-[10px] text-amber-400 font-mono">(In playlist)</span>
-                          )}
-                        </button>
-                      );
-                    })
+                    playlists.map((pl) => (
+                      <button
+                        key={pl.playlist_id}
+                        onClick={() => handleAddTrack(pl.playlist_id)}
+                        className="w-full flex items-center justify-between px-3 py-1.5 rounded-lg text-xs text-left text-zinc-300 hover:bg-zinc-800 transition-colors"
+                      >
+                        <span className="truncate">{pl.name}</span>
+                        <span className="text-[10px] text-zinc-500 font-mono">{pl.song_count ?? 0}</span>
+                      </button>
+                    ))
                   )}
                 </div>
 
@@ -188,12 +224,10 @@ export const PlayerBar: React.FC = () => {
                       placeholder="Playlist title..."
                       value={newPlaylistName}
                       onChange={(e) => setNewPlaylistName(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleCreateAndAdd()}
                       className="flex-1 bg-zinc-950 border border-zinc-700 rounded px-2 py-1 text-xs text-zinc-200 outline-none"
                     />
-                    <button
-                      onClick={handleCreateAndAdd}
-                      className="p-1 rounded bg-teal-500 text-zinc-950 hover:bg-teal-400"
-                    >
+                    <button onClick={handleCreateAndAdd} aria-label="Create and add" className="p-1 rounded bg-teal-500 text-zinc-950 hover:bg-teal-400">
                       <Check className="w-3.5 h-3.5" />
                     </button>
                   </div>
@@ -211,11 +245,8 @@ export const PlayerBar: React.FC = () => {
           </div>
 
           {/* Volume Control */}
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setVolume(volume > 0 ? 0 : 0.65)}
-              className="text-zinc-400 hover:text-white transition-colors"
-            >
+          <div className="hidden sm:flex items-center gap-2">
+            <button onClick={() => setVolume(volume > 0 ? 0 : 0.65)} aria-label={volume === 0 ? 'Unmute' : 'Mute'} className="text-zinc-400 hover:text-white transition-colors">
               {volume === 0 ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
             </button>
             <input
@@ -228,6 +259,16 @@ export const PlayerBar: React.FC = () => {
               className="w-16 h-1 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-teal-400"
             />
           </div>
+
+          {/* Cross: stop the music and close the player */}
+          <button
+            onClick={closePlayer}
+            title="Stop and close player"
+            aria-label="Stop and close player"
+            className="p-2 rounded-full text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
       </div>
     </div>
