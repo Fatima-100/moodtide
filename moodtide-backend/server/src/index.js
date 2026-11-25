@@ -3,14 +3,14 @@ import express from 'express';
 import cors from 'cors';
 import { authRouter, requireAuth } from './auth.js';
 import { api, admin } from './routes.js';
-import { getPool } from './db.js';
+import { query } from './db.js';
 
 const app = express();
 app.use(cors({ origin: (process.env.CLIENT_ORIGIN || 'http://localhost:5173').split(',') }));
 app.use(express.json());
 
 app.get('/api/health', async (_req, res) => {
-  try { await (await getPool()).request().query('SELECT 1 AS ok'); res.json({ ok: true, db: 'connected' }); }
+try { await query('SELECT 1 AS ok'); res.json({ ok: true, db: 'connected' }); }
   catch (e) { res.status(500).json({ ok: false, db: e.message }); }
 });
 app.use('/api/auth', authRouter);
