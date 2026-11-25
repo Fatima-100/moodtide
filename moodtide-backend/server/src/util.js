@@ -17,7 +17,7 @@ export class HttpError extends Error {
 export function audit(tx, userId, table, recordId, action, oldData = null, newData = null) {
   return query(
     `INSERT INTO Audit_Log (log_id, user_id, table_name, record_id, action, old_data, new_data, changed_at)
-     VALUES (@id, @u, @t, @r, @a, @o, @n, SYSUTCDATETIME())`,
+     VALUES (@id, @u, @t, @r, @a, @o, @n, now())`,
     {
       id: newId('aud'), u: userId, t: table, r: String(recordId), a: action,
       o: oldData ? JSON.stringify(oldData) : null,
