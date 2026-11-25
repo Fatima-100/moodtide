@@ -15,7 +15,7 @@ export const requireAuth = wrap(async (req, _res, next) => {
   try { payload = jwt.verify(token, SECRET); } catch { throw new HttpError(401, 'Invalid or expired token'); }
   const [session] = await query(
     `SELECT session_id FROM Auth_Sessions
-     WHERE token_hash = @h AND is_revoked = 0 AND expires_at > SYSUTCDATETIME()`,
+     WHERE token_hash = @h AND is_revoked = false AND expires_at > now()`,
     { h: sha256(token) }
   );
   if (!session) throw new HttpError(401, 'Session revoked or expired');
@@ -31,7 +31,7 @@ async function startSession(userId, role) {
   const token = jwt.sign({ sub: userId, role }, SECRET, { expiresIn: `${SESSION_DAYS}d` });
   await query(
     `INSERT INTO Auth_Sessions (session_id, user_id, token_hash, created_at, expires_at, is_revoked)
-     VALUES (@id, @u, @h, SYSUTCDATETIME(), DATEADD(DAY, @d, SYSUTCDATETIME()), 0)`,
+     VALUES (@id, @u, @h, now(), now() + make_interval(days => @d), false)`,
     { id: newId('ses'), u: userId, h: sha256(token), d: SESSION_DAYS }
   );
   return token;
@@ -53,7 +53,7 @@ authRouter.post('/register', wrap(async (req, res) => {
   await withTx(async (tx) => {
     await query(
       `INSERT INTO Users (user_id, role_id, username, email, password_hash, experiment_group, created_at)
-       VALUES (@id, 'rol_2', @n, @e, @p, @g, SYSUTCDATETIME())`,
+       VALUES (@id, 'rol_2', @n, @e, @p, @g, now())`,
       { id: userId, n: username, e: email.toLowerCase(), p: bcrypt.hashSync(password, 10), g: group }, tx
     );
     await audit(tx, userId, 'Users', userId, 'INSERT', null, { email, group });
@@ -65,18 +65,18 @@ authRouter.post('/register', wrap(async (req, res) => {
 authRouter.post('/login', wrap(async (req, res) => {
   const { email, password } = req.body || {};
   const [u] = await query(
-    `SELECT u.*, r.role_name FROM Users u JOIN Roles r ON r.role_id = u.role_id WHERE u.email = @e`,
+    `SELECT u.*, r.role_name FROM Users u JOIN Roles r ON r.role_id = u.role_id WHERE lower(u.email) = @e`,
     { e: String(email || '').toLowerCase() }
   );
   if (!u || !bcrypt.compareSync(String(password || ''), u.password_hash))
     throw new HttpError(401, 'Invalid email or password');
-  await query('UPDATE Users SET last_login = SYSUTCDATETIME() WHERE user_id = @u', { u: u.user_id });
+  await query('UPDATE Users SET last_login = now() WHERE user_id = @u', { u: u.user_id });
   const token = await startSession(u.user_id, u.role_name);
   res.json({ token, user: publicUser(u) });
 }));
 
 authRouter.post('/logout', requireAuth, wrap(async (req, res) => {
-  await query('UPDATE Auth_Sessions SET is_revoked = 1 WHERE token_hash = @h', { h: sha256(req.token) });
+  await query('UPDATE Auth_Sessions SET is_revoked = true WHERE token_hash = @h', { h: sha256(req.token) });
   res.json({ ok: true });
 }));
 

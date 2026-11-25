@@ -17,11 +17,12 @@ app.use('/api/auth', authRouter);
 app.use('/api/admin', requireAuth, admin);
 app.use('/api', api);
 
-// SQL Server error numbers -> friendly HTTP errors
+// PostgreSQL error codes -> friendly HTTP errors
 app.use((err, _req, res, _next) => {
-  const n = err.number ?? err.originalError?.info?.number;
-  if (n === 2627 || n === 2601) return res.status(409).json({ error: 'Already exists (unique/primary key violation)', detail: err.message });
-  if (n === 547) return res.status(400).json({ error: 'Constraint violation (foreign key or CHECK)', detail: err.message });
+  if (err.code === '23505') return res.status(409).json({ error: 'Already exists (unique/primary key violation)', detail: err.message });
+  if (err.code === '23503') return res.status(400).json({ error: 'Constraint violation (foreign key)', detail: err.message });
+  if (err.code === '23514' || err.code === '23502') return res.status(400).json({ error: 'Constraint violation (CHECK or NOT NULL)', detail: err.message });
+  if (err.code === '22P02') return res.status(400).json({ error: 'Invalid input format', detail: err.message });
   const status = err.status || 500;
   if (status === 500) console.error(err);
   res.status(status).json({ error: err.message || 'Server error' });
