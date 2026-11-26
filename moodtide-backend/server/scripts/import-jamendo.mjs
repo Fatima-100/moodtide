@@ -20,6 +20,8 @@
 //              --min-sec 60 --max-sec 600 (keep tracks in this length range)
 //              --max-requests 80 (safety stop for the monthly request limit)
 //
+// Shared code lives in scripts/lib/ (task A15): flags, cache, duplicate detection, saving, length class.
+//
 // .env needs: JAMENDO_CLIENT_ID and the DB_* settings (or DATABASE_URL), same as the server.
 //
 // REQUEST LIMIT: the free plan has a monthly request limit. One request returns up to 100 tracks,
@@ -37,23 +39,19 @@
 // feature_source = 'tags'. Task A21 replaces them with measured values.
 // =====================================================================
 import 'dotenv/config';
-import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { query, withTx, closePool } from '../src/db.js';
+// Shared code (task A15): flags, cache, database, duplicate detection, one save function, length class.
+import { query, withTx, runScript } from './lib/db.js';
+import { getFlags } from './lib/flags.js';
+import { createCache } from './lib/cache.js';
+import { loadCatalogIndex } from './lib/dedupe.js';
+import { saveSong } from './lib/save.js';
+import { lengthClass } from './lib/length.js';
+import { clean } from './lib/normalize.js';
+import { sleep, clamp, round3, jitter, warn } from './lib/util.js';
 
-// ---------- command line (same style as import-catalog.mjs) ----------
-const argv = process.argv.slice(2);
-const has = (n) => argv.includes(`--${n}`);
-const opt = (n, d) => {
-  const i = argv.indexOf(`--${n}`);
-  return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : d;
-};
-const intOpt = (n, d, lo, hi) => {
-  const v = parseInt(opt(n, String(d)), 10);
-  return Math.min(hi, Math.max(lo, Number.isFinite(v) ? v : d));
-};
+// ---------- command line ----------
+const { has, opt, int: intOpt, dryRun: DRY_RUN } = getFlags();
 
-const DRY_RUN = has('dry-run');
 const LIMIT = intOpt('limit', 300, 1, 5000);              // total tracks to keep
 const ONLY_TAG = String(opt('tag', '')).trim().toLowerCase();
 const MAX_PER_ARTIST = intOpt('max-per-artist', 5, 1, 100); // keeps one popular artist from filling a tag
@@ -75,20 +73,8 @@ const CACHE_DAYS = 7;
 // The tags from the task book. Jamendo tags are English words (genre, instrument or mood).
 const TAGS = ['calm', 'chill', 'sleep', 'focus', 'world', 'folk', 'acoustic', 'upbeat', 'sad'];
 
-// ---------- small helpers ----------
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
-const round3 = (x) => Math.round(x * 1000) / 1000;
-const clean = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();   // Jamendo titles can contain line breaks
-const unit = (s) => parseInt(createHash('md5').update(s).digest('hex').slice(0, 8), 16) / 0xffffffff;
-const jitter = (key, amount) => (unit(key) - 0.5) * 2 * amount;
-const warn = (m) => console.warn(`  ! ${m}`);
-const lengthClass = (sec) => (sec < 90 ? 'short' : sec <= 480 ? 'standard' : 'long'); // same rule as A15
-
 // ---------- Jamendo API with a disk cache ----------
-const CACHE_FILE = new URL('./.jamendo-cache.json', import.meta.url);
-let cache = {};
-try { cache = JSON.parse(readFileSync(CACHE_FILE, 'utf8')); } catch { /* no cache yet */ }
+const cache = createCache('.jamendo-cache.json', { days: CACHE_DAYS });
 let apiCalls = 0, cacheHits = 0, quotaHit = false;
 
 // The response also holds a long "waveform" for every track. Keep only what we use, so the cache stays small.
@@ -102,8 +88,8 @@ async function jamendo(path, params) {
   const p = { format: 'json', ...params };
   // The client id is NOT part of the cache key, so it never lands in the cache file.
   const key = path + '?' + Object.entries(p).sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, v]) => `${k}=${v}`).join('&');
-  const hit = cache[key];
-  if (!FRESH && hit && Date.now() - hit.t < CACHE_DAYS * 86400000) { cacheHits++; return hit.data; }
+  const hit = cache.get(key, { fresh: FRESH });
+  if (hit) { cacheHits++; return hit; }
 
   if (apiCalls >= MAX_REQUESTS) throw new Error(`Stopped: reached --max-requests ${MAX_REQUESTS}. Raise it if you really want more requests.`);
   const url = new URL(API + path);
@@ -125,8 +111,7 @@ async function jamendo(path, params) {
       throw new Error(`Jamendo said: ${msg}${h?.code !== undefined ? ` (code ${h.code})` : ''}`);
     }
     const data = { count: Number(h.results_count) || 0, results: (json.results || []).map(slim) };
-    cache[key] = { t: Date.now(), data };
-    try { writeFileSync(CACHE_FILE, JSON.stringify(cache)); } catch { /* cache is optional */ }
+    cache.set(key, data);
     return data;
   }
   throw new Error('Jamendo kept refusing (rate limit). Wait a few minutes and run again.');
@@ -414,74 +399,29 @@ async function main() {
     return;
   }
 
-  // ----- 4) save, all in one transaction. Running it twice never creates duplicates. -----
+  // ----- 4) save, all in one transaction. Running it twice never creates duplicates (shared saveSong, A15). -----
   const result = await withTx(async (tx) => {
-    let inserted = 0, updated = 0;
+    const index = await loadCatalogIndex(tx);
+    const counts = { inserted: 0, updated: 0, duplicate: 0, skipped: 0 };
     for (const { r, f, g } of plan) {
-      // artist (unique on source + external_id)
-      const [artist] = await query(
-        `INSERT INTO artists (artist_id, name, source, external_id)
-         VALUES (@id, @name, 'jamendo', @ext)
-         ON CONFLICT (source, external_id) WHERE external_id IS NOT NULL
-         DO UPDATE SET name = EXCLUDED.name
-         RETURNING artist_id`,
-        { id: `jama_${r.artistId}`, name: r.artist, ext: r.artistId }, tx);
-
-      // album. A single has no album at Jamendo, so it gets its own album row: that is where the cover lives.
-      const albumExt = r.albumId || `t${r.id}`;
-      const [album] = await query(
-        `INSERT INTO albums (album_id, artist_id, title, release_year, cover_url, source, external_id)
-         VALUES (@id, @artist, @title, @year, @cover, 'jamendo', @ext)
-         ON CONFLICT (source, external_id) WHERE external_id IS NOT NULL
-         DO UPDATE SET title = EXCLUDED.title,
-                       release_year = COALESCE(EXCLUDED.release_year, albums.release_year),
-                       cover_url = COALESCE(EXCLUDED.cover_url, albums.cover_url)
-         RETURNING album_id`,
-        { id: `jamb_${albumExt}`, artist: artist.artist_id, title: r.album, year: r.year, cover: r.cover, ext: albumExt }, tx);
-
-      // song. is_active is NOT touched on a re-run, so a song an admin took down stays down.
       const popularity = clamp(Math.round(80 - r.rank * 0.25), 30, 80); // rough: Jamendo's own popularity order within the tag
-      const attribution = `"${r.title}" by ${r.artist}, from Jamendo. Licensed under ${r.license.name} (${r.license.url}).`;
-      const [song] = await query(
-        `INSERT INTO songs (song_id, artist_id, album_id, title, duration_sec, release_year, audio_url, popularity,
-                            is_active, source, external_id, external_url, content_type, region,
-                            license, attribution_text, source_url, length_class)
-         VALUES (@id, @artist, @album, @title, @dur, @year, @audio, @pop,
-                 true, 'jamendo', @ext, @link, 'music', 'international',
-                 @license, @attr, @src, @len)
-         ON CONFLICT (source, external_id) WHERE external_id IS NOT NULL
-         DO UPDATE SET title = EXCLUDED.title, duration_sec = EXCLUDED.duration_sec,
-                       release_year = COALESCE(EXCLUDED.release_year, songs.release_year),
-                       audio_url = EXCLUDED.audio_url, popularity = EXCLUDED.popularity,
-                       external_url = EXCLUDED.external_url, license = EXCLUDED.license,
-                       attribution_text = EXCLUDED.attribution_text, source_url = EXCLUDED.source_url,
-                       length_class = EXCLUDED.length_class
-         RETURNING song_id, (xmax = 0) AS inserted`,
-        { id: `jam_${r.id}`, artist: artist.artist_id, album: album.album_id, title: r.title, dur: r.sec, year: r.year,
-          audio: r.audio, pop: popularity, ext: r.id, link: r.page, license: r.license.name, attr: attribution,
-          src: r.page, len: lengthClass(r.sec) }, tx);
-      if (song.inserted) inserted++; else updated++;
-
-      // features: never overwrite values measured later (A21)
-      await query(
-        `INSERT INTO song_features (song_id, energy, happiness, tempo, danceability, acousticness, feature_source)
-         VALUES (@id, @e, @h, @t, @d, @a, 'tags')
-         ON CONFLICT (song_id) DO UPDATE
-           SET energy = EXCLUDED.energy, happiness = EXCLUDED.happiness, tempo = EXCLUDED.tempo,
-               danceability = EXCLUDED.danceability, acousticness = EXCLUDED.acousticness, feature_source = 'tags'
-           WHERE song_features.feature_source IN ('tags', 'estimated')`,
-        { id: song.song_id, e: f.energy, h: f.happiness, t: f.tempo, d: f.danceability, a: f.acousticness }, tx);
-
-      for (const gid of g.ids) {
-        await query(`INSERT INTO song_genres (song_id, genre_id) VALUES (@s, @g) ON CONFLICT DO NOTHING`, { s: song.song_id, g: gid }, tx);
-      }
+      const out = await saveSong(tx, index, {
+        source: 'jamendo', externalId: r.id, title: r.title, durationSec: r.sec, year: r.year,
+        artist: { name: r.artist, externalId: r.artistId },
+        album: { title: r.album, externalId: r.albumId || `t${r.id}`, cover: r.cover },
+        audioUrl: r.audio, popularity, contentType: 'music', region: 'international',
+        license: r.license.name,
+        attribution: `"${r.title}" by ${r.artist}, from Jamendo. Licensed under ${r.license.name} (${r.license.url}).`,
+        sourceUrl: r.page, externalUrl: r.page,
+        features: f, featureSource: 'tags', genreIds: g.ids,
+      });
+      counts[out.action] = (counts[out.action] || 0) + 1;
     }
-    return { inserted, updated };
+    return counts;
   });
-  console.log(`\nSaved ${result.inserted} new tracks, updated ${result.updated} existing ones.`);
+  console.log(`\nSaved ${result.inserted} new tracks, updated ${result.updated} existing ones` +
+    `${result.duplicate ? `, skipped ${result.duplicate} that already exist under another source or id` : ''}.`);
   if (CHECK_AUDIO) await checkAudio(records);
 }
 
-main()
-  .catch((e) => { console.error('\nImport failed:', e.message); process.exitCode = 1; })
-  .finally(() => closePool().catch(() => {}));
+runScript(main);
