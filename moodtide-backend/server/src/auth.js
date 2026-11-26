@@ -3,8 +3,9 @@ import jwt from 'jsonwebtoken';
 import { Router } from 'express';
 import { query, withTx } from './db.js';
 import { HttpError, audit, newId, sha256, wrap } from './util.js';
+import { config } from './config.js';
 
-const SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
+const SECRET = config.jwtSecret; // validated at startup (config.js): no built-in fallback
 const SESSION_DAYS = 7;
 
 /** Reads "Authorization: Bearer <token>", checks JWT + that the session row is not revoked/expired. */
