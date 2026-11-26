@@ -1,9 +1,9 @@
 /**
  * MoodTide engine: the stored-procedure / trigger logic from the old db.ts mock,
- * now running against SQL Server. Every function takes `tx` so callers decide the transaction.
+ * now running against PostgreSQL. Every function takes `tx` so callers decide the transaction.
  *
- * NOTE: the song queries below use Songs.content_type, which islamic-setup.sql adds.
- * Run that SQL file in SSMS BEFORE starting the server with this file.
+ * NOTE: the song queries below use songs.content_type and songs.region, which are
+ * part of db/init/01_schema.sql.
  */
 import { query } from './db.js';
 import { HttpError, audit, clamp, newId } from './util.js';
@@ -28,18 +28,18 @@ const BATCH_EXPLORE = 4;
 const REGION_GROUPS = { asian: ['indian', 'korean', 'japanese'] };
 const regionList = (r) => REGION_GROUPS[r] ?? [r];
 
-const SONG_GENRE_APPLY = `OUTER APPLY (
-  SELECT TOP 1 g.genre_id, g.name AS genre_name
-  FROM Song_Genre sg JOIN Genres g ON g.genre_id = sg.genre_id
-  WHERE sg.song_id = s.song_id ORDER BY g.genre_id) gx`;
+const SONG_GENRE_APPLY = `LEFT JOIN LATERAL (
+  SELECT g.genre_id, g.name AS genre_name
+  FROM song_genres sg JOIN genres g ON g.genre_id = sg.genre_id
+  WHERE sg.song_id = s.song_id ORDER BY g.genre_id LIMIT 1) gx ON true`;
 
 /* ------------------------------------------------------------------ detectMood */
 export async function detectMood(userId, tx, { preferCheckin = true } = {}) {
   // newest first (the old mock sliced from the wrong end)
   const rows = await query(
-    `SELECT TOP 10 h.song_id, h.completed, h.listened_sec, f.energy, f.tempo
+    `SELECT h.song_id, h.completed, h.listened_sec, f.energy, f.tempo
      FROM Listening_History h LEFT JOIN Song_Features f ON f.song_id = h.song_id
-     WHERE h.user_id = @u ORDER BY h.played_at DESC`, { u: userId }, tx);
+     WHERE h.user_id = @u ORDER BY h.played_at DESC LIMIT 10`, { u: userId }, tx);
 
   let skipCount = 0;
   for (const r of rows) {
@@ -64,15 +64,15 @@ export async function detectMood(userId, tx, { preferCheckin = true } = {}) {
   else if (timeOfDay === 'night') { mood = 'calm'; score = 80; rule = 'Late-night settling into quiet hours.'; }
 
   const [checkin] = await query(
-    'SELECT TOP 1 checkin_id, mood_label, energy_level FROM Mood_Checkins WHERE user_id = @u ORDER BY checked_at DESC',
+    'SELECT checkin_id, mood_label, energy_level FROM Mood_Checkins WHERE user_id = @u ORDER BY checked_at DESC LIMIT 1',
     { u: userId }, tx);
 
   // A check-in from the last 6 hours is what the user told us they feel, so it wins over the history rules.
   // (The "Re-check my mood" button passes preferCheckin = false to detect from listening history only.)
   if (preferCheckin) {
     const [recent] = await query(
-      `SELECT TOP 1 mood_label, energy_level FROM Mood_Checkins
-       WHERE user_id = @u AND checked_at >= DATEADD(HOUR, -6, SYSUTCDATETIME()) ORDER BY checked_at DESC`,
+      `SELECT mood_label, energy_level FROM Mood_Checkins
+       WHERE user_id = @u AND checked_at >= now() - interval '6 hours' ORDER BY checked_at DESC LIMIT 1`,
       { u: userId }, tx);
     if (recent) {
       mood = recent.mood_label;
@@ -85,7 +85,7 @@ export async function detectMood(userId, tx, { preferCheckin = true } = {}) {
   await query(
     `INSERT INTO Mood_Scores (score_id, user_id, calculated_at, detected_mood, mood_score, skip_count, replay_count,
                               time_of_day, avg_energy, avg_tempo, checkin_id)
-     VALUES (@id, @u, SYSUTCDATETIME(), @m, @s, @sk, @rp, @t, @ae, @at, @c)`,
+     VALUES (@id, @u, now(), @m, @s, @sk, @rp, @t, @ae, @at, @c)`,
     { id: scoreId, u: userId, m: mood, s: score, sk: skipCount, rp: replayCount, t: timeOfDay, ae: avgEnergy, at: avgTempo, c: checkin?.checkin_id ?? null },
     tx);
   await audit(tx, userId, 'Mood_Scores', scoreId, 'INSERT', null, { mood, score });
@@ -106,13 +106,13 @@ export async function generateSuggestions(userId, tx) {
   const isGroupA = user.experiment_group === 'A';
   const w_mood = isGroupA ? 0 : W('w_mood', 0.30); // A/B: cohort A is taste-only
 
-  const [latest] = await query('SELECT TOP 1 score_id, detected_mood FROM Mood_Scores WHERE user_id = @u ORDER BY calculated_at DESC', { u: userId }, tx);
+  const [latest] = await query('SELECT score_id, detected_mood FROM Mood_Scores WHERE user_id = @u ORDER BY calculated_at DESC LIMIT 1', { u: userId }, tx);
   const mood = latest?.detected_mood ?? 'calm';
   const base = MOOD_COORDINATES[mood];
   // if the user just checked in with this mood, the 1-5 energy slider nudges the target energy
   const [ck] = await query(
-    `SELECT TOP 1 mood_label, energy_level FROM Mood_Checkins
-     WHERE user_id = @u AND checked_at >= DATEADD(HOUR, -6, SYSUTCDATETIME()) ORDER BY checked_at DESC`,
+    `SELECT mood_label, energy_level FROM Mood_Checkins
+     WHERE user_id = @u AND checked_at >= now() - interval '6 hours' ORDER BY checked_at DESC LIMIT 1`,
     { u: userId }, tx);
   const target = ck && ck.mood_label === mood
     ? { ...base, energy: clamp(0.7 * base.energy + 0.3 * (ck.energy_level / 5), 0, 1) }
@@ -129,8 +129,8 @@ export async function generateSuggestions(userId, tx) {
   const liked = await query(
     `SELECT DISTINCT r.song_id FROM Ratings r
      WHERE r.stars >= 4 AND r.user_id IN (
-       SELECT TOP 3 CASE WHEN user_id_a = @u THEN user_id_b ELSE user_id_a END
-       FROM User_Similarity WHERE user_id_a = @u OR user_id_b = @u ORDER BY similarity_score DESC)`,
+       SELECT CASE WHEN user_id_a = @u THEN user_id_b ELSE user_id_a END
+       FROM User_Similarity WHERE user_id_a = @u OR user_id_b = @u ORDER BY similarity_score DESC LIMIT 3)`,
     { u: userId }, tx);
   const likedSet = new Set(liked.map((l) => l.song_id));
 
@@ -138,7 +138,7 @@ export async function generateSuggestions(userId, tx) {
   const songs = await query(
     `SELECT s.song_id, f.energy, s.region, f.happiness, f.tempo, gx.genre_id, gx.genre_name
      FROM Songs s JOIN Song_Features f ON f.song_id = s.song_id ${SONG_GENRE_APPLY}
-     WHERE s.is_active = 1 AND s.content_type = 'music'`, {}, tx);
+     WHERE s.is_active = true AND s.content_type = 'music'`, {}, tx);
 
   const scored = songs.map((s) => {
     const genreId = s.genre_id ?? 'gen_1';
@@ -177,7 +177,7 @@ export async function generateSuggestions(userId, tx) {
   const batchId = newId('bat');
   await query(
     `INSERT INTO Suggestion_Batches (batch_id, user_id, experiment_id, variant, score_id, created_at)
-     VALUES (@b, @u, 'exp_1', @v, @s, SYSUTCDATETIME())`,
+     VALUES (@b, @u, 'exp_1', @v, @s, now())`,
     { b: batchId, u: userId, v: user.experiment_group, s: latest?.score_id ?? null }, tx);
 
   for (const [i, t] of top.entries()) {
@@ -207,7 +207,7 @@ export async function buildMoodJourney(userId, fromMood, toMood, tx, region = 'a
   const playlistId = newId('pl');
   await query(
     `INSERT INTO Playlists (playlist_id, user_id, name, description, playlist_type, start_mood, target_mood, created_at)
-     VALUES (@id, @u, @n, @d, 'mood_journey', @f, @t, SYSUTCDATETIME())`,
+     VALUES (@id, @u, @n, @d, 'mood_journey', @f, @t, now())`,
     { id: playlistId, u: userId, n: `Mood Journey: ${from.label} → ${to.label}`,
       d: `Harmonic transition from ${from.label} to ${to.label} in 8 steps.`, f: fromMood, t: toMood }, tx);
 
@@ -224,7 +224,7 @@ export async function buildMoodJourney(userId, fromMood, toMood, tx, region = 'a
   const songs = await query(
     `SELECT s.song_id, f.energy, f.happiness, f.tempo FROM Songs s
      JOIN Song_Features f ON f.song_id = s.song_id
-     WHERE s.is_active = 1 AND s.content_type = 'music' ${regionSql}`,
+     WHERE s.is_active = true AND s.content_type = 'music' ${regionSql}`,
     regionParams, tx);
   if (!songs.length) throw new HttpError(400, 'No songs for that region yet.');
 
@@ -243,7 +243,7 @@ export async function buildMoodJourney(userId, fromMood, toMood, tx, region = 'a
     if (!best) break;
     chosen.add(best);
     await query(
-      'INSERT INTO Playlist_Songs (playlist_id, song_id, [position], added_at) VALUES (@p, @s, @pos, SYSUTCDATETIME())',
+      'INSERT INTO Playlist_Songs (playlist_id, song_id, "position", added_at) VALUES (@p, @s, @pos, now())',
       { p: playlistId, s: best, pos: step + 1 }, tx);
   }
   await audit(tx, userId, 'Playlists', playlistId, 'INSERT', null, { fromMood, toMood, steps: chosen.size, region });
@@ -252,17 +252,17 @@ export async function buildMoodJourney(userId, fromMood, toMood, tx, region = 'a
 
 /* ---------------------------------------------------------------- taste + signals */
 async function bumpTaste(tx, userId, songId, delta, plays) {
-  const [g] = await query('SELECT TOP 1 genre_id FROM Song_Genre WHERE song_id = @s', { s: songId }, tx);
+  const [g] = await query('SELECT genre_id FROM song_genres WHERE song_id = @s ORDER BY genre_id LIMIT 1', { s: songId }, tx);
   if (!g) return;
   const [row] = await query('SELECT affinity_score FROM User_Taste_Profile WHERE user_id = @u AND genre_id = @g', { u: userId, g: g.genre_id }, tx);
   if (!row) {
     await query(
       `INSERT INTO User_Taste_Profile (user_id, genre_id, affinity_score, play_count, updated_at)
-       VALUES (@u, @g, @a, @p, SYSUTCDATETIME())`,
+       VALUES (@u, @g, @a, @p, now())`,
       { u: userId, g: g.genre_id, a: clamp(3 + delta, 1, 5), p: plays }, tx);
   } else {
     await query(
-      `UPDATE User_Taste_Profile SET affinity_score = @a, play_count = play_count + @p, updated_at = SYSUTCDATETIME()
+      `UPDATE User_Taste_Profile SET affinity_score = @a, play_count = play_count + @p, updated_at = now()
        WHERE user_id = @u AND genre_id = @g`,
       { u: userId, g: g.genre_id, a: clamp(row.affinity_score + delta, 1, 5), p: plays }, tx);
   }
@@ -271,7 +271,7 @@ async function bumpTaste(tx, userId, songId, delta, plays) {
 const insertSignal = (tx, userId, songId, suggestionId, type, value) =>
   query(
     `INSERT INTO Implicit_Signals (signal_id, user_id, song_id, suggestion_id, signal_type, signal_value, created_at)
-     VALUES (@id, @u, @s, @sg, @t, @v, SYSUTCDATETIME())`,
+     VALUES (@id, @u, @s, @sg, @t, @v, now())`,
     { id: newId('sig'), u: userId, s: songId, sg: suggestionId, t: type, v: value }, tx);
 
 /** Trigger: onSongPlay */
@@ -279,7 +279,7 @@ export async function recordPlay(tx, userId, { songId, listenedSec = 0, complete
   const historyId = newId('his');
   await query(
     `INSERT INTO Listening_History (history_id, user_id, song_id, played_at, listened_sec, completed, source, suggestion_id)
-     VALUES (@id, @u, @s, SYSUTCDATETIME(), @l, @c, @src, @sg)`,
+     VALUES (@id, @u, @s, now(), @l, @c, @src, @sg)`,
     { id: historyId, u: userId, s: songId, l: Math.round(listenedSec), c: !!completed, src: source, sg: suggestionId }, tx);
 
   let type = 'full_play', value = 1;
@@ -292,11 +292,11 @@ export async function recordPlay(tx, userId, { songId, listenedSec = 0, complete
     await query('UPDATE Suggestions SET outcome = @o WHERE suggestion_id = @id', { o: type === 'skip' ? 'skipped' : 'played', id: suggestionId }, tx);
 
   // measureSongImpact: mood before vs after, from the two latest check-ins
-  const checkins = await query('SELECT TOP 2 mood_label FROM Mood_Checkins WHERE user_id = @u ORDER BY checked_at DESC', { u: userId }, tx);
+  const checkins = await query('SELECT mood_label FROM Mood_Checkins WHERE user_id = @u ORDER BY checked_at DESC LIMIT 2', { u: userId }, tx);
   if (checkins.length === 2)
     await query(
       `INSERT INTO Song_Impact (impact_id, user_id, song_id, history_id, mood_before, mood_after, measured_at)
-       VALUES (@id, @u, @s, @h, @b, @a, SYSUTCDATETIME())`,
+       VALUES (@id, @u, @s, @h, @b, @a, now())`,
       { id: newId('imp'), u: userId, s: songId, h: historyId, b: checkins[1].mood_label, a: checkins[0].mood_label }, tx);
 
   await audit(tx, userId, 'Listening_History', historyId, 'INSERT', null, { songId, completed, type });
@@ -308,7 +308,7 @@ export async function recordRating(tx, userId, songId, stars, suggestionId = nul
   if (!Number.isInteger(stars) || stars < 1 || stars > 5) throw new HttpError(400, 'stars must be an integer between 1 and 5');
   const ratingId = newId('rat');
   await query(
-    'INSERT INTO Ratings (rating_id, user_id, song_id, suggestion_id, stars, rated_at) VALUES (@id, @u, @s, @sg, @st, SYSUTCDATETIME())',
+    'INSERT INTO Ratings (rating_id, user_id, song_id, suggestion_id, stars, rated_at) VALUES (@id, @u, @s, @sg, @st, now())',
     { id: ratingId, u: userId, s: songId, sg: suggestionId, st: stars }, tx);
   await insertSignal(tx, userId, songId, suggestionId, 'full_play', stars - 3);
   await bumpTaste(tx, userId, songId, (stars - 3) * 0.2, 0);
@@ -324,9 +324,9 @@ export async function addToPlaylist(tx, userId, playlistId, songId) {
   if (!songId) throw new HttpError(400, 'songId required');
   const [dup] = await query('SELECT 1 AS x FROM Playlist_Songs WHERE playlist_id = @p AND song_id = @s', { p: playlistId, s: songId }, tx);
   if (dup) throw new HttpError(409, 'Song is already in this playlist');
-  const [{ next }] = await query('SELECT ISNULL(MAX([position]), 0) + 1 AS next FROM Playlist_Songs WHERE playlist_id = @p', { p: playlistId }, tx);
+  const [{ next }] = await query('SELECT COALESCE(MAX("position"), 0) + 1 AS next FROM Playlist_Songs WHERE playlist_id = @p', { p: playlistId }, tx);
   await query(
-    'INSERT INTO Playlist_Songs (playlist_id, song_id, [position], added_at) VALUES (@p, @s, @pos, SYSUTCDATETIME())',
+    'INSERT INTO Playlist_Songs (playlist_id, song_id, "position", added_at) VALUES (@p, @s, @pos, now())',
     { p: playlistId, s: songId, pos: next }, tx);
   await insertSignal(tx, userId, songId, null, SIGNAL_ADD, 2);
   await audit(tx, userId, 'Playlist_Songs', `${playlistId}_${songId}`, 'INSERT', null, { position: next });
@@ -343,7 +343,7 @@ export async function computeUserSimilarity(tx) {
   for (const r of rows)
     await query(
       `INSERT INTO User_Similarity (user_id_a, user_id_b, similarity_score, common_songs, calculated_at)
-       VALUES (@a, @b, @s, @c, SYSUTCDATETIME())`,
+       VALUES (@a, @b, @s, @c, now())`,
       { a: r.ua, b: r.ub, s: +(1 / (1 + r.mse * 0.25)).toFixed(3), c: r.common }, tx);
   await audit(tx, null, 'User_Similarity', 'BATCH_RECOMPUTE', 'UPDATE', null, { count: rows.length });
   return rows.length;

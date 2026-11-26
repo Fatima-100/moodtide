@@ -6,8 +6,8 @@ import * as engine from './engine.js';
 
 export const api = Router();
 
-const GENRE_APPLY = `OUTER APPLY (SELECT TOP 1 g.genre_id, g.name AS genre
-  FROM Song_Genre sg JOIN Genres g ON g.genre_id = sg.genre_id WHERE sg.song_id = s.song_id ORDER BY g.genre_id) gx`;
+const GENRE_APPLY = `LEFT JOIN LATERAL (SELECT g.genre_id, g.name AS genre
+  FROM song_genres sg JOIN genres g ON g.genre_id = sg.genre_id WHERE sg.song_id = s.song_id ORDER BY g.genre_id LIMIT 1) gx ON true`;
 const SONG_COLS = `s.song_id, s.region, s.content_type, s.title, s.duration_sec, s.release_year, s.audio_url, s.popularity,
   s.external_id, s.external_url,
   ar.artist_id, ar.name AS artist, al.title AS album, al.cover_url, gx.genre_id, gx.genre,
@@ -38,16 +38,16 @@ api.get('/songs', wrap(async (req, res) => {
   }[sort] ?? 's.popularity DESC, s.title';
   res.json(await query(
     `SELECT ${SONG_COLS} ${SONG_FROM}
-     WHERE s.is_active = 1
+     WHERE s.is_active = true
        AND s.content_type = @t
-       AND (@q = '' OR s.title LIKE '%' + @q + '%' OR ar.name LIKE '%' + @q + '%'
-            OR al.title LIKE '%' + @q + '%' OR gx.genre LIKE '%' + @q + '%')
-       AND (@g IS NULL OR gx.genre_id = @g)
-       AND (@a IS NULL OR ar.artist_id = @a)
-       AND (@y IS NULL OR s.release_year = @y)
-       AND (@r IS NULL OR s.region = @r OR (@r = 'asian' AND s.region IN ('indian', 'korean', 'japanese')))
+       AND (@q::text = '' OR s.title ILIKE '%' || @q || '%' OR ar.name ILIKE '%' || @q || '%'
+            OR al.title ILIKE '%' || @q || '%' OR gx.genre ILIKE '%' || @q || '%')
+       AND (@g::text IS NULL OR gx.genre_id = @g)
+       AND (@a::text IS NULL OR ar.artist_id = @a)
+       AND (@y::int IS NULL OR s.release_year = @y)
+       AND (@r::text IS NULL OR s.region = @r OR (@r = 'asian' AND s.region IN ('indian', 'korean', 'japanese')))
      ORDER BY ${ORDER}
-     OFFSET @off ROWS FETCH NEXT @lim ROWS ONLY`,
+     LIMIT @lim OFFSET @off`,
     {
       q: String(q), g: genre, a: artist, y: year ? +year : null,
       t: type === 'islamic' ? 'islamic' : 'music',
@@ -61,7 +61,7 @@ api.get('/songs', wrap(async (req, res) => {
 api.get('/artists', wrap(async (_req, res) => res.json(await query(
   `SELECT ar.artist_id, ar.name, COUNT(*) AS song_count, MIN(al.cover_url) AS cover_url
    FROM Artists ar
-   JOIN Songs s ON s.artist_id = ar.artist_id AND s.is_active = 1 AND s.content_type = 'music'
+   JOIN Songs s ON s.artist_id = ar.artist_id AND s.is_active = true AND s.content_type = 'music'
    LEFT JOIN Albums al ON al.album_id = s.album_id
    GROUP BY ar.artist_id, ar.name
    ORDER BY COUNT(*) DESC, ar.name`))));
@@ -90,9 +90,9 @@ api.put('/preferences', wrap(async (req, res) => {
 }));
 
 api.get('/history', wrap(async (req, res) => res.json(await query(
-  `SELECT TOP 100 h.history_id, h.played_at, h.listened_sec, h.completed, h.source, s.song_id, s.title, ar.name AS artist
+  `SELECT h.history_id, h.played_at, h.listened_sec, h.completed, h.source, s.song_id, s.title, ar.name AS artist
    FROM Listening_History h JOIN Songs s ON s.song_id = h.song_id JOIN Artists ar ON ar.artist_id = s.artist_id
-   WHERE h.user_id = @u ORDER BY h.played_at DESC`, { u: req.user.id }))));
+   WHERE h.user_id = @u ORDER BY h.played_at DESC LIMIT 100`, { u: req.user.id }))));
 
 api.post('/plays', wrap(async (req, res) => {
   if (!req.body?.songId) throw new HttpError(400, 'songId required');
@@ -110,20 +110,20 @@ api.get('/ratings', wrap(async (req, res) => res.json(await query(
 
 /* ---------- mood ---------- */
 api.get('/mood/current', wrap(async (req, res) => {
-  const [row] = await query('SELECT TOP 1 * FROM Mood_Scores WHERE user_id = @u ORDER BY calculated_at DESC', { u: req.user.id });
+  const [row] = await query('SELECT * FROM Mood_Scores WHERE user_id = @u ORDER BY calculated_at DESC LIMIT 1', { u: req.user.id });
   res.json(row ?? null);
 }));
 
 /** Detected mood over time: used by the Mood journey chart */
 api.get('/mood/history', wrap(async (req, res) => res.json(await query(
-  `SELECT TOP 60 score_id, calculated_at, detected_mood, mood_score, skip_count, replay_count, time_of_day, avg_energy, avg_tempo
-   FROM Mood_Scores WHERE user_id = @u ORDER BY calculated_at DESC`, { u: req.user.id }))));
+  `SELECT score_id, calculated_at, detected_mood, mood_score, skip_count, replay_count, time_of_day, avg_energy, avg_tempo
+   FROM Mood_Scores WHERE user_id = @u ORDER BY calculated_at DESC LIMIT 60`, { u: req.user.id }))));
 
 api.post('/mood/detect', wrap(async (req, res) =>
   res.json(await withTx((tx) => engine.detectMood(req.user.id, tx, { preferCheckin: false })))));
 
 api.get('/mood/checkins', wrap(async (req, res) => res.json(await query(
-  'SELECT TOP 50 checkin_id, mood_label, energy_level, checked_at FROM Mood_Checkins WHERE user_id = @u ORDER BY checked_at DESC', { u: req.user.id }))));
+  'SELECT checkin_id, mood_label, energy_level, checked_at FROM Mood_Checkins WHERE user_id = @u ORDER BY checked_at DESC LIMIT 50', { u: req.user.id }))));
 
 /** Manual check-in, then auto-detect mood and refresh suggestions in ONE transaction */
 api.post('/checkins', wrap(async (req, res) => {
@@ -133,7 +133,7 @@ api.post('/checkins', wrap(async (req, res) => {
   const out = await withTx(async (tx) => {
     const id = newId('chk');
     await query(
-      'INSERT INTO Mood_Checkins (checkin_id, user_id, mood_label, energy_level, checked_at) VALUES (@id, @u, @m, @e, SYSUTCDATETIME())',
+      'INSERT INTO Mood_Checkins (checkin_id, user_id, mood_label, energy_level, checked_at) VALUES (@id, @u, @m, @e, now())',
       { id, u: req.user.id, m: mood, e: energy }, tx);
     await audit(tx, req.user.id, 'Mood_Checkins', id, 'INSERT', null, { mood, energy });
     const detected = await engine.detectMood(req.user.id, tx);
@@ -145,7 +145,7 @@ api.post('/checkins', wrap(async (req, res) => {
 
 /* ---------- suggestions ---------- */
 api.get('/suggestions', wrap(async (req, res) => {
-  const [batch] = await query('SELECT TOP 1 batch_id, variant, created_at FROM Suggestion_Batches WHERE user_id = @u ORDER BY created_at DESC', { u: req.user.id });
+  const [batch] = await query('SELECT batch_id, variant, created_at FROM Suggestion_Batches WHERE user_id = @u ORDER BY created_at DESC LIMIT 1', { u: req.user.id });
   if (!batch) return res.json({ batch: null, suggestions: [] });
   const sugs = await query(
     `SELECT sg.suggestion_id, sg.rank_position, sg.total_score, sg.taste_score, sg.mood_match_score, sg.similar_users_score,
@@ -178,7 +178,7 @@ api.post('/playlists', wrap(async (req, res) => {
   await withTx(async (tx) => {
     await query(
       `INSERT INTO Playlists (playlist_id, user_id, name, description, playlist_type, start_mood, target_mood, created_at)
-       VALUES (@id, @u, @n, @d, 'normal', NULL, NULL, SYSUTCDATETIME())`, { id, u: req.user.id, n: name, d: description ?? '' }, tx);
+       VALUES (@id, @u, @n, @d, 'normal', NULL, NULL, now())`, { id, u: req.user.id, n: name, d: description ?? '' }, tx);
     await audit(tx, req.user.id, 'Playlists', id, 'INSERT', null, { name });
   });
   res.status(201).json({ playlist_id: id });
@@ -197,10 +197,10 @@ api.get('/playlists/:id', wrap(async (req, res) => {
   const [pl] = await query('SELECT * FROM Playlists WHERE playlist_id = @p AND user_id = @u', { p: req.params.id, u: req.user.id });
   if (!pl) throw new HttpError(404, 'Playlist not found');
   const songs = await query(
-    `SELECT ps.[position], ${SONG_COLS} FROM Playlist_Songs ps JOIN Songs s ON s.song_id = ps.song_id
+    `SELECT ps."position", ${SONG_COLS} FROM Playlist_Songs ps JOIN Songs s ON s.song_id = ps.song_id
      JOIN Artists ar ON ar.artist_id = s.artist_id LEFT JOIN Albums al ON al.album_id = s.album_id
      LEFT JOIN Song_Features f ON f.song_id = s.song_id ${GENRE_APPLY}
-     WHERE ps.playlist_id = @p ORDER BY ps.[position]`, { p: req.params.id });
+     WHERE ps.playlist_id = @p ORDER BY ps."position"`, { p: req.params.id });
   res.json({ ...pl, songs });
 }));
 
@@ -245,7 +245,7 @@ admin.put('/weights', wrap(async (req, res) => {
       if (typeof v !== 'number' || v < 0 || v > 1) throw new HttpError(400, `${n} must be a number between 0 and 1`);
       const [old] = await query('SELECT weight_id, weight_value FROM Scoring_Weights WHERE weight_name = @n', { n }, tx);
       if (!old) continue;
-      await query('UPDATE Scoring_Weights SET weight_value = @v, updated_by = @u, updated_at = SYSUTCDATETIME() WHERE weight_id = @id',
+      await query('UPDATE Scoring_Weights SET weight_value = @v, updated_by = @u, updated_at = now() WHERE weight_id = @id',
         { v, u: req.user.id, id: old.weight_id }, tx);
       await audit(tx, req.user.id, 'Scoring_Weights', old.weight_id, 'UPDATE', { [n]: old.weight_value }, { [n]: v });
     }
@@ -254,7 +254,7 @@ admin.put('/weights', wrap(async (req, res) => {
 }));
 
 admin.get('/audit', wrap(async (req, res) => res.json(await query(
-  'SELECT TOP (@n) * FROM Audit_Log ORDER BY changed_at DESC', { n: Math.min(500, +req.query.limit || 100) }))));
+  'SELECT * FROM Audit_Log ORDER BY changed_at DESC LIMIT @n', { n: Math.min(500, +req.query.limit || 100) }))));
 
 admin.post('/similarity', wrap(async (_req, res) =>
   res.json({ pairs: await withTx((tx) => engine.computeUserSimilarity(tx)) })));
@@ -264,7 +264,7 @@ admin.get('/ab-stats', wrap(async (_req, res) => res.json(await query(
   `SELECT u.experiment_group AS cohort,
           COUNT(DISTINCT u.user_id) AS users,
           COUNT(h.history_id) AS plays,
-          CAST(100.0 * SUM(CASE WHEN h.completed = 1 THEN 1 ELSE 0 END) / NULLIF(COUNT(h.history_id), 0) AS DECIMAL(5,1)) AS completion_pct,
+          CAST(100.0 * SUM(CASE WHEN h.completed THEN 1 ELSE 0 END) / NULLIF(COUNT(h.history_id), 0) AS DECIMAL(5,1)) AS completion_pct,
           (SELECT CAST(AVG(CAST(r.stars AS FLOAT)) AS DECIMAL(3,2)) FROM Ratings r JOIN Users ru ON ru.user_id = r.user_id
             WHERE ru.experiment_group = u.experiment_group) AS avg_stars
    FROM Users u LEFT JOIN Listening_History h ON h.user_id = u.user_id
