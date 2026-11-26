@@ -83,6 +83,10 @@ jobs:
             psql -v ON_ERROR_STOP=1 -f "$f"
           done
 
+      # Fake songs for the tests (the seed has no songs). Removed before the real import in A12.
+      - name: Load sample songs
+        run: psql -v ON_ERROR_STOP=1 -f ../../db/dev/dev_sample_data.sql
+
       - name: Database check
         run: node scripts/db-check.mjs
 
