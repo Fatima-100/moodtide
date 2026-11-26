@@ -1,0 +1,96 @@
+name: CI
+
+# Runs on every pull request and on every push to main.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A new push to the same branch cancels the older run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # Temporary PostgreSQL that exists only for this run.
+    # These values are throwaway and not secrets: the database is deleted when the job ends.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: moodtide
+          POSTGRES_PASSWORD: ci-throwaway-password
+          POSTGRES_DB: moodtide
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U moodtide -d moodtide"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      # Used by psql to load the schema and seed.
+      PGHOST: localhost
+      PGPORT: 5432
+      PGUSER: moodtide
+      PGPASSWORD: ci-throwaway-password
+      PGDATABASE: moodtide
+      # Used by the server (config.js and db.js).
+      PORT: 4000
+      CLIENT_ORIGIN: http://localhost:5173
+      DB_SERVER: localhost
+      DB_PORT: 5432
+      DB_NAME: moodtide
+      DB_USER: moodtide
+      DB_PASSWORD: ci-throwaway-password
+
+    defaults:
+      run:
+        working-directory: moodtide-backend/server
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: moodtide-backend/server/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # A fresh random secret on every run, so no secret is stored in the repo.
+      - name: Create a one-run JWT secret
+        run: echo "JWT_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+
+      # Same order as docker-entrypoint-initdb.d: 01_schema.sql, then 02_seed.sql.
+      - name: Load schema and seed
+        run: |
+          for f in ../../db/init/*.sql; do
+            echo "Loading $f"
+            psql -v ON_ERROR_STOP=1 -f "$f"
+          done
+
+      - name: Database check
+        run: node scripts/db-check.mjs
+
+      - name: Run tests
+        run: npm test
+
+  # Person B: add the frontend lint and build job here, as a second job.
+  # frontend:
+  #   name: Frontend lint and build
+  #   runs-on: ubuntu-latest
+  #   steps: [...]
