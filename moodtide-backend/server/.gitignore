@@ -1,3 +1,4 @@
 node_modules
 .env
 .jamendo-cache.json
+.lastfm-cache.json
