@@ -9,6 +9,7 @@ import { normalizeTimeZone, DEFAULT_TZ } from './tz.js';
 import { checkAndCount } from './plans.js';
 import { billing, getMyPlan } from './billing.js';
 import { adminSaas } from './admin-saas.js';
+import { getClipFeed } from './feed.js';
 const GENRE_APPLY = `LEFT JOIN LATERAL (SELECT g.genre_id, g.name AS genre
   FROM song_genres sg JOIN genres g ON g.genre_id = sg.genre_id WHERE sg.song_id = s.song_id ORDER BY g.genre_id LIMIT 1) gx ON true`;
 const SONG_COLS = `s.song_id, s.region, s.content_type, s.title, s.duration_sec, s.release_year, s.audio_url, s.popularity,
@@ -315,6 +316,13 @@ api.post('/suggestions/generate', wrap(async (req, res) => {
     return engine.generateSuggestions(req.user.id, tx);
   });
   res.status(201).json({ batch_id: batchId });
+}));
+
+/* ---------- short-clip feed (A29) ---------- */
+api.get('/feed/clips', wrap(async (req, res) => {
+  const { limit, cursor, mood } = req.query;
+  const feed = await getClipFeed(req.user.id, { limit, cursor, mood });
+  res.json(feed);
 }));
 
 /* ---------- playlists ---------- */
