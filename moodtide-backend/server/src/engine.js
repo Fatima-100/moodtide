@@ -206,21 +206,30 @@ export async function generateSuggestions(userId, tx) {
      VALUES (@b, @u, 'exp_1', @v, @s, now())`,
     { b: batchId, u: userId, v: user.experiment_group, s: latest?.score_id ?? null }, tx);
 
-  for (const [i, t] of top.entries()) {
-    const sid = newId('sug');
-    await query(
-      `INSERT INTO Suggestions (suggestion_id, batch_id, song_id, rank_position, total_score, taste_score, mood_match_score,
-                                similar_users_score, freshness_score, recent_penalty, is_exploration, outcome)
-       VALUES (@id, @b, @song, @rank, @tot, @ta, @mo, @si, @fr, @pe, @ex, 'pending')`,
-      { id: sid, b: batchId, song: t.song_id, rank: i + 1, tot: t.total, ta: t.taste_s, mo: t.mood_s, si: t.similar_s, fr: t.fresh_s, pe: t.penalty, ex: t.explore },
-      tx);
-    for (const [r, [type, text, contrib]] of t.reasons.entries()) {
-      await query(
-        `INSERT INTO Suggestion_Reasons (reason_id, suggestion_id, reason_type, reason_text, contribution)
-         VALUES (@id, @s, @t, @x, @c)`,
-        { id: `rsn_${sid}_${r + 1}`, s: sid, t: type, x: text, c: contrib }, tx);
-    }
-  }
+  // A21: one INSERT for all suggestions and one for all reasons (unnest turns the arrays into rows),
+  // instead of one round trip to the database per row.
+  const rows = top.map((t, i) => ({ ...t, id: newId('sug'), rank: i + 1 }));
+  const col = (list, key) => list.map((x) => x[key]);
+  await query(
+    `INSERT INTO Suggestions (suggestion_id, batch_id, song_id, rank_position, total_score, taste_score, mood_match_score,
+                              similar_users_score, freshness_score, recent_penalty, is_exploration, outcome)
+     SELECT t.id, @b, t.song, t.pos, t.tot, t.ta, t.mo, t.si, t.fr, t.pe, t.ex, 'pending'
+     FROM unnest(@id::text[], @song::text[], @pos::int[], @tot::numeric[], @ta::numeric[], @mo::numeric[],
+                 @si::numeric[], @fr::numeric[], @pe::numeric[], @ex::boolean[])
+          AS t(id, song, pos, tot, ta, mo, si, fr, pe, ex)`,
+    { b: batchId, id: col(rows, 'id'), song: col(rows, 'song_id'), pos: col(rows, 'rank'), tot: col(rows, 'total'),
+      ta: col(rows, 'taste_s'), mo: col(rows, 'mood_s'), si: col(rows, 'similar_s'), fr: col(rows, 'fresh_s'),
+      pe: col(rows, 'penalty'), ex: col(rows, 'explore') },
+    tx);
+
+  const reasonRows = rows.flatMap((s) => s.reasons.map(([type, text, contrib], r) =>
+    ({ id: `rsn_${s.id}_${r + 1}`, suggestion: s.id, type, text, contrib })));
+  await query(
+    `INSERT INTO Suggestion_Reasons (reason_id, suggestion_id, reason_type, reason_text, contribution)
+     SELECT * FROM unnest(@id::text[], @s::text[], @t::text[], @x::text[], @c::numeric[])`,
+    { id: col(reasonRows, 'id'), s: col(reasonRows, 'suggestion'), t: col(reasonRows, 'type'),
+      x: col(reasonRows, 'text'), c: col(reasonRows, 'contrib') },
+    tx);
   await audit(tx, userId, 'Suggestion_Batches', batchId, 'INSERT', null, { count: top.length, variant: user.experiment_group, region: regionPref });
   return batchId;
 }
