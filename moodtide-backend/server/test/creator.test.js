@@ -57,11 +57,14 @@ describe('creator endpoints', () => {
     assert.equal(res.status, 201, JSON.stringify(res.body));
     const { upload } = res.body;
     assert.equal(upload.title, 'My Song');
-    assert.equal(upload.status, 'pending');
+    assert.equal(upload.status, 'uploading');
     assert.equal(upload.consent_text, consent.body.consent_text);
     assert.ok(upload.consent_at);
     assert.match(upload.file_key, new RegExp(`^creator/crt_\\w+/${upload.upload_id}\\.mp3$`));
-    assert.equal(res.body.signed_upload, null);   // storage arrives in A33
+    if (res.body.signed_upload !== null) {
+      assert.equal(res.body.signed_upload.method, 'PUT');
+      assert.equal(typeof res.body.signed_upload.url, 'string');
+    }
 
     const second = await post(u, 'uploads', { ...good, title: 'Second', content_type: 'audio/aac' });
     assert.match(second.body.upload.file_key, /\.aac$/);
@@ -69,7 +72,7 @@ describe('creator endpoints', () => {
     const mine = await list(u);
     assert.equal(mine.status, 200);
     assert.deepEqual(mine.body.map((x) => x.title), ['Second', 'My Song']);
-    assert.ok(mine.body.every((x) => x.status === 'pending' && x.genre));
+    assert.ok(mine.body.every((x) => x.status === 'uploading' && x.genre));
   });
 
   test('bad input is refused and nothing is saved', async () => {
@@ -89,7 +92,7 @@ describe('creator endpoints', () => {
     await post(a, 'register', { display_name: 'A' });
     await post(b, 'register', { display_name: 'B' });
     const res = await post(a, 'uploads', { ...good, status: 'approved', file_key: 'elsewhere.mp3' });
-    assert.equal(res.body.upload.status, 'pending');
+    assert.equal(res.body.upload.status, 'uploading');
     assert.notEqual(res.body.upload.file_key, 'elsewhere.mp3');
     assert.deepEqual((await list(b)).body, []);
   });

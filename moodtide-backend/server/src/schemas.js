@@ -79,9 +79,10 @@ export const checkoutSchema = z.object({
   cvc: z.string().min(1, 'cvc is required'),
 });
 
-// A32: creators and uploads
+// A32/A33: creators and uploads
 export const LICENSES = ['CC0', 'CC BY', 'CC BY-SA', 'CC BY-NC', 'CC BY-NC-SA'];
 export const AUDIO_TYPES = { 'audio/mpeg': 'mp3', 'audio/aac': 'aac' };   // type -> file extension
+export const MAX_UPLOAD_BYTES = 15 * 1024 * 1024; // 15 MB
 
 export const creatorRegisterSchema = z.object({
   display_name: z.string().trim().min(1, 'display_name is required').max(100, 'display_name must be 100 characters or fewer'),
@@ -94,6 +95,10 @@ export const uploadRequestSchema = z.object({
   license: z.enum(LICENSES, { error: `license must be one of ${LICENSES.join(', ')}` }),
   consent: z.literal(true, { error: 'consent must be true: the creator has to accept the consent text' }),
   content_type: z.enum(Object.keys(AUDIO_TYPES), { error: 'content_type must be audio/mpeg or audio/aac' }).default('audio/mpeg'),
+  size_bytes: z.number().int('size_bytes must be a whole number of bytes')
+    .min(1, 'size_bytes must be at least 1 byte')
+    .max(MAX_UPLOAD_BYTES, 'File must be at most 15 MB')
+    .optional(),
 });
 
 /**
