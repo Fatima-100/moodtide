@@ -3,7 +3,7 @@ import { query, withTx } from './db.js';
 import { requireAuth, requireAdmin } from './auth.js';
 import { HttpError, audit, newId, wrap } from './util.js';
 import * as engine from './engine.js';
-
+import { parseEvents, insertEvents } from './events.js';
 export const api = Router();
 
 const GENRE_APPLY = `LEFT JOIN LATERAL (SELECT g.genre_id, g.name AS genre
@@ -107,7 +107,12 @@ api.post('/ratings', wrap(async (req, res) => {
 
 api.get('/ratings', wrap(async (req, res) => res.json(await query(
   'SELECT song_id, stars, rated_at FROM Ratings WHERE user_id = @u ORDER BY rated_at DESC', { u: req.user.id }))));
-
+/* ---------- event log (A18) ---------- */
+api.post('/events', wrap(async (req, res) => {
+  const events = parseEvents(req.body);
+  const accepted = await insertEvents(req.user.id, events);
+  res.status(201).json({ accepted });
+}));
 /* ---------- mood ---------- */
 api.get('/mood/current', wrap(async (req, res) => {
   const [row] = await query('SELECT * FROM Mood_Scores WHERE user_id = @u ORDER BY calculated_at DESC LIMIT 1', { u: req.user.id });
