@@ -6,7 +6,7 @@ import { HttpError } from './util.js';
 export const registerSchema = z.object({
   username: z.string().trim().min(1, 'username is required').max(50, 'username cannot exceed 50 characters'),
   email: z.string().trim().email('Invalid email address').max(255, 'email cannot exceed 255 characters'),
-  password: z.string().min(8, 'password must be at least 8 characters long'),
+  password: z.string().min(6, 'password must be at least 6 characters long'),
   region: z.enum(['all', 'pakistani', 'punjabi', 'asian', 'indian', 'korean', 'japanese', 'international']).optional(),
   tz: z.string().max(64).optional(),
 });
@@ -67,9 +67,9 @@ export const reportSchema = z.object({
 });
 
 export const feedbackSchema = z.object({
-  page: z.string().max(100).optional().default(''),
-  rating: z.number().int().min(1).max(5).optional().nullable(),
-  text: z.string().trim().min(1, 'text is required').max(4000),
+  page: z.string().trim().min(1, 'page is required').max(100, 'page must be 100 characters or fewer'),
+  rating: z.number().int('rating must be an integer').min(1, 'rating must be between 1 and 5').max(5, 'rating must be between 1 and 5'),
+  text: z.string().max(2000, 'text must be 2000 characters or fewer').optional().nullable(),
 });
 
 export const checkoutSchema = z.object({
