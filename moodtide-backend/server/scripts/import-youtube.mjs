@@ -38,6 +38,7 @@ import { saveSong } from './lib/save.js';
 import { isBadVideo } from './lib/filters.js';
 import { norm, dupKey, isoToSec, cleanTitle, parseArtistTitle, interleave } from './lib/normalize.js';
 import { clamp, round3, jitter, warn, popularityFromViews } from './lib/util.js';
+import { GENRE_IDS } from './lib/artists.js';
 
 // Kept so tests (and older scripts) can still import these helpers from here
 export { isoToSec, cleanTitle, parseArtistTitle, interleave };
@@ -88,6 +89,11 @@ const STYLE = {
   rock:    { e: 0.8,  h: 0.55, d: 0.5,  a: 0.2,  t: 120 },
   hiphop:  { e: 0.8,  h: 0.55, d: 0.8,  a: 0.1,  t: 95 },
 };
+// Style -> genre id (db/init/03_genres.sql). If a genre is missing, the old generic "Pakistani" genre is used.
+const STYLE_GENRE = {
+  qawwali: 'gen_qawwali', sufi: 'gen_sufi_kalam', ghazal: 'gen_ghazal',
+  pop: 'gen_urdu_pop', rock: 'gen_urdu_pop', hiphop: 'gen_hiphop',
+};
 const PAKISTANI_ARTISTS = [
   ['Nusrat Fateh Ali Khan', 'qawwali'], ['Rahat Fateh Ali Khan', 'qawwali'], ['Abida Parveen', 'sufi'],
   ['Arooj Aftab', 'sufi'], ['Amjad Sabri', 'qawwali'],
@@ -126,9 +132,14 @@ async function main() {
   const yt = createYouTube({ key: API_KEY, fresh: FRESH });
   await yt.checkKey();
 
-  // The Islamic categories (gen_isl_*) have their own importer (import-islamic.mjs)
-  const dbGenres = (await query('SELECT genre_id, name FROM genres ORDER BY name')).filter((g) => !g.genre_id.startsWith('gen_isl_'));
-  console.log(`Found ${dbGenres.length} music genres in your database: ${dbGenres.map((g) => g.name).join(', ')}`);
+  // The Islamic categories (gen_isl_*) have their own importer (import-islamic.mjs).
+  // The regional genres (Ghazal, Urdu Pop, K-Pop...) are filled from artist lists by import-catalog.mjs:
+  // searching their names here would find the wrong music ("Pop hits" saved as Urdu Pop).
+  const byCatalog = new Set(Object.values(GENRE_IDS).filter((id) => id !== 'gen_2' && id !== 'gen_hiphop'));
+  const allGenres = (await query('SELECT genre_id, name FROM genres ORDER BY name')).filter((g) => !g.genre_id.startsWith('gen_isl_'));
+  const dbGenres = allGenres.filter((g) => !byCatalog.has(g.genre_id));
+  console.log(`Found ${allGenres.length} music genres in your database. Searching ${dbGenres.length} of them here: ${dbGenres.map((g) => g.name).join(', ')}`);
+  console.log(`(${allGenres.length - dbGenres.length} regional genres are filled by import-catalog.mjs --genre ...)`);
 
   // ----- build the search groups: one per genre, one per Pakistani artist -----
   const groups = [];
@@ -138,12 +149,13 @@ async function main() {
     groups.push({ label: g.name, genreId: g.genre_id, profile: plan.profile, queries: plan.queries,
       duration: 'short', limit: PER_GENRE, country: null, region: 'international', artist: null, items: [] });
   }
-  let pkGenreId = (dbGenres.find((g) => /pakistan|desi/i.test(g.name)) || {}).genre_id;
+  let pkGenreId = (allGenres.find((g) => /pakistan|desi/i.test(g.name)) || {}).genre_id;
   let createPkGenre = false;
   if (!NO_PAKISTANI) {
     if (!pkGenreId) { pkGenreId = 'gen_pakistani'; createPkGenre = true; }
     for (const [name, style] of PAKISTANI_ARTISTS) {
-      groups.push({ label: name, genreId: pkGenreId, profile: STYLE[style], queries: [name],
+      const own = STYLE_GENRE[style];
+      groups.push({ label: name, genreId: own && allGenres.some((g) => g.genre_id === own) ? own : pkGenreId, profile: STYLE[style], queries: [name],
         duration: 'any', limit: PER_ARTIST, country: 'PK', region: 'pakistani', artist: name, items: [] });
     }
   }
