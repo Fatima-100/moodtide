@@ -11,8 +11,9 @@
 //
 //   node scripts/import-catalog.mjs --dry-run                 (search + match, saves nothing)
 //   node scripts/import-catalog.mjs                           (all artists, 12 songs each)
-//   node scripts/import-catalog.mjs --only punjabi            (one region: punjabi|indian|korean|japanese)
-//   node scripts/import-catalog.mjs --artist "Sidhu Moose Wala:punjabi"   (one extra artist)
+//   node scripts/import-catalog.mjs --genre ghazal,qawwali    (one or more genres from scripts/lib/artists.js)
+//   node scripts/import-catalog.mjs --only punjabi            (one region: pakistani|punjabi|indian|korean|japanese|international)
+//   node scripts/import-catalog.mjs --artist "Sidhu Moose Wala:punjabi:punjabi_pop"   (one extra artist: name:region:genre)
 //   node scripts/import-catalog.mjs --per-artist 20 --searches 2
 //   node scripts/import-catalog.mjs --no-lastfm               (skip Last.fm, use the region of the artist list)
 //   node scripts/import-catalog.mjs --country PK              (iTunes store; default US, has the biggest catalog)
@@ -20,6 +21,7 @@
 //
 // .env needs: YOUTUBE_API_KEY and the DB_* settings (or DATABASE_URL), same as the server.
 // and optionally: LASTFM_API_KEY
+// The artist lists, one per genre, are in scripts/lib/artists.js (task A16). The day-by-day quota plan is docs/import-schedule.xlsx.
 // Shared code lives in scripts/lib/ (task A15): flags, cache, YouTube client, duplicate detection,
 // saving, the bad-video filter, length class.
 //
@@ -35,7 +37,7 @@
 // Songs are saved with feature_source = 'estimated'.
 // =====================================================================
 import 'dotenv/config';
-import { query, withTx, ensureGenre, runScript } from './lib/db.js';
+import { query, withTx, runScript } from './lib/db.js';
 import { getFlags } from './lib/flags.js';
 import { createYouTube, isUsableVideo } from './lib/youtube.js';
 import { loadCatalogIndex } from './lib/dedupe.js';
@@ -43,12 +45,14 @@ import { saveSong } from './lib/save.js';
 import { badVideoWords } from './lib/filters.js';
 import { norm, baseKey, hasWords, isoToSec } from './lib/normalize.js';
 import { sleep, clamp, round3, jitter, warn, popularityFromViews } from './lib/util.js';
+import { ARTISTS, GENRE_IDS } from './lib/artists.js';
 
 // ---------- command line ----------
 const { has, opt, int, dryRun: DRY_RUN, fresh: FRESH } = getFlags();
 const PER_ARTIST = int('per-artist', 12, 1, 1000);
 const SEARCHES = int('searches', 1, 1, 2);
 const ONLY = String(opt('only', '')).toLowerCase();
+const GENRES = String(opt('genre', '')).toLowerCase().split(',').map((x) => x.trim()).filter(Boolean);
 const EXTRA = String(opt('artist', ''));
 const ITUNES_COUNTRY = String(opt('country', 'US')).toUpperCase();
 const YT_REGION = String(opt('region', 'PK')).toUpperCase(); // hide videos blocked in this country
@@ -60,20 +64,6 @@ const MIN_SEC = 60, MAX_SEC = 600;
 const ITUNES_API = process.env.ITUNES_API_BASE || 'https://itunes.apple.com';             // override only for tests
 const LASTFM_API = process.env.LASTFM_API_BASE || 'https://ws.audioscrobbler.com/2.0/';   // override only for tests
 
-// ---------- artists: [name, region, country] ----------
-// Region is only the FALLBACK. Last.fm tags decide first when they have a clear answer.
-const ARTISTS = [
-  ['Diljit Dosanjh', 'punjabi', 'IN'], ['Karan Aujla', 'punjabi', 'IN'], ['AP Dhillon', 'punjabi', 'IN'],
-  ['Sidhu Moose Wala', 'punjabi', 'IN'], ['Gurdas Maan', 'punjabi', 'IN'], ['Babbu Maan', 'punjabi', 'IN'],
-  ['Ammy Virk', 'punjabi', 'IN'], ['Jasmine Sandlas', 'punjabi', 'IN'], ['Satinder Sartaaj', 'punjabi', 'IN'],
-  ['Gippy Grewal', 'punjabi', 'IN'],
-  ['Arijit Singh', 'indian', 'IN'], ['Shreya Ghoshal', 'indian', 'IN'], ['Sonu Nigam', 'indian', 'IN'],
-  ['A. R. Rahman', 'indian', 'IN'], ['Neha Kakkar', 'indian', 'IN'],
-  ['BTS', 'korean', 'KR'], ['BLACKPINK', 'korean', 'KR'], ['IU', 'korean', 'KR'],
-  ['NewJeans', 'korean', 'KR'], ['Stray Kids', 'korean', 'KR'],
-  ['YOASOBI', 'japanese', 'JP'], ['Hikaru Utada', 'japanese', 'JP'], ['Kenshi Yonezu', 'japanese', 'JP'],
-];
-
 // Last.fm tag -> region. Counts of all tags for a region are added up, the biggest wins.
 const TAG_REGION = {
   punjabi: 'punjabi', bhangra: 'punjabi', 'punjabi pop': 'punjabi', 'punjabi music': 'punjabi',
@@ -82,7 +72,6 @@ const TAG_REGION = {
   'k-pop': 'korean', kpop: 'korean', korean: 'korean',
   'j-pop': 'japanese', jpop: 'japanese', japanese: 'japanese', 'j-rock': 'japanese', anime: 'japanese',
 };
-const REGION_GENRE = { punjabi: 'Punjabi', pakistani: 'Pakistani', indian: 'Bollywood', korean: 'K-Pop', japanese: 'J-Pop' };
 
 // Last.fm tag -> small nudges to features. e=energy h=happiness d=danceability a=acousticness t=tempo
 const MOOD_TAGS = [
@@ -273,12 +262,18 @@ async function main() {
   const yt = createYouTube({ key: YT_KEY, fresh: FRESH });
   await checkLastfm();
 
-  let artists = ARTISTS.slice();
+  let artists = ARTISTS.slice();   // [name, region, country, genreKey]
   if (EXTRA) {
-    const [n, r = 'international'] = EXTRA.split(':');
-    artists = [[n.trim(), r.trim().toLowerCase(), null]];
-  } else if (ONLY) artists = artists.filter((a) => a[1] === ONLY);
-  if (!artists.length) { console.error('No artists selected. --only takes: punjabi, indian, korean or japanese.'); process.exit(1); }
+    const [n, r = 'international', g = ''] = EXTRA.split(':');
+    artists = [[n.trim(), r.trim().toLowerCase(), null, g.trim().toLowerCase()]];
+  } else {
+    const badGenre = GENRES.find((g) => !GENRE_IDS[g]);
+    if (badGenre) { console.error(`--genre "${badGenre}" is not known. Choose from: ${Object.keys(GENRE_IDS).join(', ')}`); process.exit(1); }
+    if (GENRES.length) artists = artists.filter((a) => GENRES.includes(a[3]));
+    if (ONLY) artists = artists.filter((a) => a[1] === ONLY);
+  }
+  if (!artists.length) { console.error('No artists selected. Check --genre and --only (regions: pakistani, punjabi, indian, korean, japanese, international).'); process.exit(1); }
+  if (EXTRA && EXTRA.split(':')[2] && !GENRE_IDS[artists[0][3]]) { console.error(`The genre "${artists[0][3]}" is not known. Choose from: ${Object.keys(GENRE_IDS).join(', ')}`); process.exit(1); }
 
   // ----- your genres (used to map iTunes genres). A dry run may go on without the database. -----
   let dbGenres = [], dbOk = true;
@@ -298,10 +293,13 @@ async function main() {
     }
     return null;
   };
-  const regionGenre = new Map(); // region -> { id, name, create }
-  for (const [reg, name] of Object.entries(REGION_GENRE)) {
-    const found = dbGenres.find((g) => norm(g.name) === norm(name) || (reg === 'pakistani' && /pakistan|desi/i.test(g.name)));
-    regionGenre.set(reg, found ? { id: found.genre_id, name: found.name, create: false } : { id: `gen_${reg}`, name, create: true });
+  // the genres of the selected artists must exist (db/init/03_genres.sql creates them)
+  const known = new Set(dbGenres.map((g) => g.genre_id));
+  const missing = [...new Set(artists.map((a) => GENRE_IDS[a[3]]).filter((id) => id && !known.has(id)))];
+  if (missing.length) {
+    const msg = `these genres are not in the database: ${missing.join(', ')}. Run db/init/03_genres.sql first.`;
+    if (!DRY_RUN) { console.error(`Stopped: ${msg}`); process.exitCode = 1; return; }
+    warn(msg);
   }
   const fallbackGenre = (dbGenres.find((g) => /^pop$/i.test(g.name)) || dbGenres[0] || {}).genre_id;
 
@@ -311,7 +309,7 @@ async function main() {
   const records = [];
   const usedVideos = new Set();
 
-  for (const [artist, hint, country] of artists) {
+  for (const [artist, hint, country, genreKey] of artists) {
     if (yt.quotaHit) { warn('YouTube quota is used up, stopping early'); break; }
     process.stdout.write(`${artist.padEnd(20)} `);
 
@@ -361,7 +359,7 @@ async function main() {
       const region = regionFromTags(trackTags, hint) || artistRegion || hint || 'international';
       if (trackTags.length) tagged++;
       records.push({
-        artist, country, region, tags,
+        artist, country, region, tags, genreKey,
         videoId: video.id, sec: video.sec, views: video.views,
         title: tr.title, album: tr.album, year: tr.year, genre: tr.genre, cover: tr.cover,
       });
@@ -376,7 +374,7 @@ async function main() {
   if (DRY_RUN) {
     for (const r of records.slice(0, 12)) {
       const f = estimate(r);
-      console.log(`  [${r.region}] ${r.artist} - ${r.title} (${r.year ?? '?'}, ${r.genre})  mood tags: ${r.moodTags.join(', ') || 'none'}  e=${f.energy} h=${f.happiness} t=${f.tempo}`);
+      console.log(`  [${r.region}/${r.genreKey || '-'}] ${r.artist} - ${r.title} (${r.year ?? '?'}, ${r.genre})  mood tags: ${r.moodTags.join(', ') || 'none'}  e=${f.energy} h=${f.happiness} t=${f.tempo}`);
     }
     return;
   }
@@ -384,17 +382,15 @@ async function main() {
 
   // ----- save in one transaction (shared saveSong: no duplicates on a second run) -----
   const result = await withTx(async (tx) => {
-    const usedRegions = new Set(records.map((r) => r.region));
-    for (const [reg, rg] of regionGenre) {
-      if (rg.create && usedRegions.has(reg)) await ensureGenre(tx, { id: rg.id, name: rg.name });
-    }
     const index = await loadCatalogIndex(tx);
     const counts = { inserted: 0, updated: 0, duplicate: 0, skipped: 0 };
     for (const t of records) {
+      // the artist's own genre first, then the genre iTunes names for the song (at most two genres per song)
       const genreIds = new Set();
-      if (t.region !== 'international' && regionGenre.has(t.region)) genreIds.add(regionGenre.get(t.region).id);
+      const own = GENRE_IDS[t.genreKey];
+      if (own && known.has(own)) genreIds.add(own);
       const dbg = pickDbGenre(t.genre);
-      if (dbg) genreIds.add(dbg);
+      if (dbg && genreIds.size < 2) genreIds.add(dbg);
       if (!genreIds.size && fallbackGenre) genreIds.add(fallbackGenre);
 
       const link = `https://www.youtube.com/watch?v=${t.videoId}`;
