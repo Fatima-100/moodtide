@@ -101,6 +101,23 @@ export const uploadRequestSchema = z.object({
     .optional(),
 });
 
+// A34: admin moderation
+export const moderateUploadSchema = z.object({
+  status: z.enum(['approved', 'rejected'], { error: 'status must be approved or rejected' }),
+  reason: z.string().trim().max(500, 'reason must be 500 characters or fewer').optional(),
+}).refine((d) => d.status !== 'rejected' || (d.reason && d.reason.length > 0), {
+  message: 'reason is required when rejecting an upload',
+  path: ['reason'],
+});
+
+export const takedownSongSchema = z.object({
+  reason: z.string().trim().min(1, 'reason is required').max(500, 'reason must be 500 characters or fewer'),
+});
+
+export const moderateReportSchema = z.object({
+  status: z.enum(['resolved', 'dismissed'], { error: 'status must be resolved or dismissed' }),
+});
+
 /**
  * Middleware factory to validate req.body with a Zod schema.
  * Replaces req.body with parsed/sanitized data or responds with readable 400.

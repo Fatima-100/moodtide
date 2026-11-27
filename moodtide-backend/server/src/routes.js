@@ -11,6 +11,7 @@ import { checkAndCount } from './plans.js';
 import { billing, getMyPlan } from './billing.js';
 import { adminSaas } from './admin-saas.js';
 import { getClipFeed } from './feed.js';
+import { moderation } from './moderation.js';
 import {
   validateBody,
   preferencesSchema,
@@ -435,6 +436,7 @@ api.use('/billing', billing);
 export const admin = Router();
 admin.use(requireAdmin);
 admin.use(adminSaas); // A27: users, usage, subscriptions, plan changes, metrics
+admin.use(moderation); // A34: creator upload moderation, song takedown, report review
 
 admin.get('/weights', wrap(async (_req, res) => res.json(await query('SELECT weight_id, weight_name, weight_value, updated_by, updated_at FROM Scoring_Weights'))));
 
