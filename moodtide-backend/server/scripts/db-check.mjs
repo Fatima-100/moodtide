@@ -45,14 +45,14 @@ await check('NUMERIC and count(*) come back as numbers, not text', async () => {
   return `w=${r.w}, users=${r.n}`;
 });
 
-await check('seed data is present (2 roles, 3+ users, 8+ genres, 5 weights, 1 experiment)', async () => {
+await check('seed data is present (2 roles, 3+ users, 8+ genres, 6 weights, 1 experiment)', async () => {
   const [r] = await query(`SELECT (SELECT count(*) FROM roles) AS roles, (SELECT count(*) FROM users) AS users,
     (SELECT count(*) FROM genres) AS genres, (SELECT count(*) FROM scoring_weights) AS weights,
     (SELECT count(*) FROM experiments) AS experiments`);
   const got = `${r.roles},${r.users},${r.genres},${r.weights},${r.experiments}`;
   // users and genres may be higher: sample data and test users add rows
-  assert(r.roles === 2 && r.users >= 3 && r.genres >= 8 && r.weights === 5 && r.experiments === 1,
-    `expected 2 roles, 3+ users, 8+ genres, 5 weights, 1 experiment but got ${got}`);
+  assert(r.roles === 2 && r.users >= 3 && r.genres >= 8 && r.weights === 6 && r.experiments === 1,
+    `expected 2 roles, 3+ users, 8+ genres, 6 weights, 1 experiment but got ${got}`);
   return got;
 });
 

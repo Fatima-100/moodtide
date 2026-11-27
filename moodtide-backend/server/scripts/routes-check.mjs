@@ -151,9 +151,9 @@ if (process.env.DEMO_ADMIN_PASSWORD) {
   adminToken = r.json?.token;
 }
 if (adminToken) {
-  await check('admin: GET /admin/weights returns 5 numeric weights', async () => {
+  await check('admin: GET /admin/weights returns 6 numeric weights', async () => {
     const r = await call('GET', '/admin/weights', null, adminToken); ok(r);
-    assert(r.json.length === 5 && r.json.every((w) => typeof w.weight_value === 'number'), `got ${JSON.stringify(r.json).slice(0, 150)}`);
+    assert(r.json.length === 6 && r.json.every((w) => typeof w.weight_value === 'number'), `got ${JSON.stringify(r.json).slice(0, 150)}`);
   });
   await check('admin: PUT /admin/weights saves a value and writes an audit row', async () => {
     const before = (await call('GET', '/admin/weights', null, adminToken)).json.find((w) => w.weight_name === 'w_fresh').weight_value;

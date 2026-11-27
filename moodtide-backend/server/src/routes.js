@@ -251,7 +251,7 @@ admin.use(requireAdmin);
 admin.get('/weights', wrap(async (_req, res) => res.json(await query('SELECT weight_id, weight_name, weight_value, updated_by, updated_at FROM Scoring_Weights'))));
 
 admin.put('/weights', wrap(async (req, res) => {
-  const names = ['w_taste', 'w_mood', 'w_similar', 'w_fresh', 'w_recent'];
+  const names = ['w_taste', 'w_mood', 'w_similar', 'w_fresh', 'w_recent', 'w_tag'];
   await withTx(async (tx) => {
     for (const n of names) {
       const v = req.body?.[n];
