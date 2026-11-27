@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { query, withTx } from './db.js';
 import { requireAuth, requireAdmin } from './auth.js';
-import { HttpError, audit, newId, wrap } from './util.js';
+import { HttpError, audit, clamp, newId, wrap } from './util.js';
 import * as engine from './engine.js';
 import { parseEvents, insertEvents } from './events.js';
 export const api = Router();
@@ -72,6 +72,51 @@ api.get('/songs/:id', wrap(async (req, res) => {
   res.json(song);
 }));
 
+/* ---------- similar songs (A23) ---------- */
+// Ranking = audio distance + shared tags + shared genre. Plain SQL for now; pgvector replaces it later.
+//   distance  : straight-line distance in (energy, happiness, tempo), each scaled to 0..1, averaged. 0 = identical.
+//               Tempo is scaled by 180 because song_features allows 40 to 220 BPM.
+//   tag match : weighted overlap of the two songs' tags (shared weight / total weight of both), 0 to 1.
+//   genre     : 1 if they share at least one genre.
+const SIMILAR_WEIGHTS = { features: 0.6, tags: 0.25, genre: 0.15 };
+const TEMPO_SPAN = 180;
+
+/** Songs like this one, best first. Public, like the rest of the catalog. ?limit=1..20 (default 10). */
+api.get('/songs/:id/similar', wrap(async (req, res) => {
+  const limit = clamp(parseInt(req.query.limit, 10) || 10, 1, 20);
+  const [seed] = await query('SELECT is_active FROM Songs WHERE song_id = @id', { id: req.params.id });
+  if (!seed || !seed.is_active) throw new HttpError(404, 'Song not found');
+  res.json(await query(
+    `WITH seed AS (
+       SELECT s.song_id, s.content_type, f.energy::float8 AS energy, f.happiness::float8 AS happiness, f.tempo
+       FROM Songs s JOIN Song_Features f ON f.song_id = s.song_id WHERE s.song_id = @id),
+     seed_tags AS (SELECT tag, weight FROM song_tags WHERE song_id = @id AND weight > 0),
+     seed_total AS (SELECT COALESCE(SUM(weight), 0)::float8 AS w FROM seed_tags)
+     SELECT ${SONG_COLS},
+            ROUND(sc.similarity::numeric, 4) AS similarity, ROUND(d.distance::numeric, 4) AS distance,
+            (t.shared_tags)[1:5] AS shared_tags, x.same_genre
+     ${SONG_FROM}
+     CROSS JOIN seed sd CROSS JOIN seed_total st
+     LEFT JOIN LATERAL (SELECT sqrt((power(f.energy::float8 - sd.energy, 2) + power(f.happiness::float8 - sd.happiness, 2)
+                                     + power((f.tempo - sd.tempo)::float8 / ${TEMPO_SPAN}, 2)) / 3) AS distance) d ON true
+     LEFT JOIN LATERAL (
+       SELECT COALESCE(SUM(LEAST(a.weight, b.weight)), 0)::float8 AS shared_w,
+              COALESCE(array_agg(a.tag ORDER BY LEAST(a.weight, b.weight) DESC, a.tag), ARRAY[]::text[]) AS shared_tags,
+              (SELECT COALESCE(SUM(weight), 0)::float8 FROM song_tags WHERE song_id = s.song_id AND weight > 0) AS own_w
+       FROM seed_tags a JOIN song_tags b ON b.song_id = s.song_id AND b.tag = a.tag AND b.weight > 0) t ON true
+     LEFT JOIN LATERAL (
+       SELECT CASE WHEN st.w + t.own_w - t.shared_w > 0 THEN t.shared_w / (st.w + t.own_w - t.shared_w) ELSE 0 END AS tag_match,
+              EXISTS (SELECT 1 FROM song_genres g1 JOIN song_genres g2 ON g2.genre_id = g1.genre_id
+                      WHERE g1.song_id = s.song_id AND g2.song_id = sd.song_id) AS same_genre) x ON true
+     LEFT JOIN LATERAL (
+       SELECT ${SIMILAR_WEIGHTS.features} * (1 - d.distance) + ${SIMILAR_WEIGHTS.tags} * x.tag_match
+              + ${SIMILAR_WEIGHTS.genre} * (CASE WHEN x.same_genre THEN 1 ELSE 0 END) AS similarity) sc ON true
+     WHERE s.is_active = true AND s.song_id <> sd.song_id AND s.content_type = sd.content_type AND f.song_id IS NOT NULL
+     ORDER BY sc.similarity DESC, s.popularity DESC, s.song_id
+     LIMIT @lim`,
+    { id: req.params.id, lim: limit }));
+}));
+
 /* ---------- everything below needs a logged-in user ---------- */
 api.use(requireAuth);
 
@@ -116,6 +161,61 @@ api.post('/ratings', wrap(async (req, res) => {
 
 api.get('/ratings', wrap(async (req, res) => res.json(await query(
   'SELECT song_id, stars, rated_at FROM Ratings WHERE user_id = @u ORDER BY rated_at DESC', { u: req.user.id }))));
+/* ---------- track reports and tester feedback (A23) ---------- */
+const REPORT_REASONS = ['cannot_play', 'wrong_info', 'copyright', 'inappropriate', 'duplicate', 'other'];
+
+/** A trimmed text field: null when empty, 400 when it is not text or too long. */
+function cleanText(value, field, max, required = false) {
+  if (value !== undefined && value !== null && typeof value !== 'string') throw new HttpError(400, `${field} must be text`);
+  const text = (value ?? '').trim();
+  if (!text) {
+    if (required) throw new HttpError(400, `${field} required`);
+    return null;
+  }
+  if (text.length > max) throw new HttpError(400, `${field} must be ${max} characters or fewer`);
+  return text;
+}
+
+/** "Report this track". Sending the same open report twice does not create a second one (200 instead of 201). */
+api.post('/reports', wrap(async (req, res) => {
+  const { songId, reason, note } = req.body || {};
+  if (typeof songId !== 'string' || !songId) throw new HttpError(400, 'songId required');
+  if (!REPORT_REASONS.includes(reason)) throw new HttpError(400, `reason must be one of ${REPORT_REASONS.join(', ')}`);
+  const text = cleanText(note, 'note', 500, reason === 'other'); // "other" needs a few words of explanation
+  const out = await withTx(async (tx) => {
+    const [song] = await query('SELECT song_id FROM Songs WHERE song_id = @s', { s: songId }, tx);
+    if (!song) throw new HttpError(404, 'Song not found');
+    const id = newId('rep');
+    const [saved] = await query(
+      `INSERT INTO track_reports (report_id, song_id, user_id, reason, note) VALUES (@id, @s, @u, @r, @n)
+       ON CONFLICT (user_id, song_id, reason) WHERE status = 'open' DO NOTHING RETURNING report_id`,
+      { id, s: songId, u: req.user.id, r: reason, n: text }, tx);
+    if (!saved) {
+      const [open] = await query(
+        "SELECT report_id FROM track_reports WHERE user_id = @u AND song_id = @s AND reason = @r AND status = 'open'",
+        { u: req.user.id, s: songId, r: reason }, tx);
+      return { status: 200, body: { report_id: open?.report_id ?? null, already_reported: true } };
+    }
+    await audit(tx, req.user.id, 'Track_Reports', id, 'INSERT', null, { songId, reason });
+    return { status: 201, body: { report_id: id } };
+  });
+  res.status(out.status).json(out.body);
+}));
+
+/** Tester feedback: which page, 1 to 5 stars, optional text. */
+api.post('/feedback', wrap(async (req, res) => {
+  const { page, rating, text } = req.body || {};
+  const where = cleanText(page, 'page', 100, true);
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) throw new HttpError(400, 'rating must be an integer from 1 to 5');
+  const message = cleanText(text, 'text', 2000);
+  const id = newId('fb');
+  await withTx(async (tx) => {
+    await query('INSERT INTO tester_feedback (feedback_id, user_id, page, rating, feedback_text) VALUES (@id, @u, @p, @r, @t)',
+      { id, u: req.user.id, p: where, r: rating, t: message }, tx);
+    await audit(tx, req.user.id, 'Tester_Feedback', id, 'INSERT', null, { page: where, rating }); // the text stays out of the audit log
+  });
+  res.status(201).json({ feedback_id: id });
+}));
 /* ---------- event log (A18) ---------- */
 api.post('/events', wrap(async (req, res) => {
   const events = parseEvents(req.body);
