@@ -9,7 +9,7 @@ import { IN_FORCE, FREE_PLAN_ID, PREMIUM_PLAN_ID } from './plans.js';
 export const billing = Router();   // mounted by routes.js at /api/billing, after requireAuth
 
 const METRICS = ['refreshes', 'skips', 'journeys', 'playlists'];
-const PERIOD_DAYS = 30;
+export const PERIOD_DAYS = 30;
 
 // The documented test cards (Stripe's published test numbers). Anything else is refused.
 const TEST_CARD_OK = '4242424242424242';        // payment succeeds
