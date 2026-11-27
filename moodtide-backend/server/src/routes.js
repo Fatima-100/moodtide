@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { query, withTx } from './db.js';
+import { createSignedRead, SIGNED_READ_TTL_SEC } from './storage.js';
 import { requireAuth, requireAdmin } from './auth.js';
 import { HttpError, audit, clamp, newId, wrap } from './util.js';
 import * as engine from './engine.js';
@@ -86,6 +87,26 @@ api.get('/songs/:id', wrap(async (req, res) => {
   const [song] = await query(`SELECT ${SONG_COLS} ${SONG_FROM} WHERE s.song_id = @id`, { id: req.params.id });
   if (!song) throw new HttpError(404, 'Song not found');
   res.json(song);
+}));
+
+/** Serve a playable stream URL: signed read URL for approved creator tracks, direct audio_url otherwise. */
+api.get('/songs/:id/stream', wrap(async (req, res) => {
+  const [song] = await query(
+    `SELECT s.song_id, s.source, s.audio_url, s.is_active
+     FROM songs s WHERE s.song_id = @id`, { id: req.params.id });
+  if (!song || !song.is_active || !song.audio_url) throw new HttpError(404, 'Stream not found');
+
+  if (song.source === 'creator') {
+    const [approved] = await query(
+      `SELECT 1 FROM uploads WHERE file_key = @k AND status = 'approved' LIMIT 1`,
+      { k: song.audio_url });
+    if (!approved) throw new HttpError(404, 'Stream not found');
+    const streamUrl = await createSignedRead(song.audio_url, SIGNED_READ_TTL_SEC);
+    if (!streamUrl) throw new HttpError(503, 'Object storage is not configured');
+    return res.json({ stream_url: streamUrl, expires_in: SIGNED_READ_TTL_SEC });
+  }
+
+  return res.json({ stream_url: song.audio_url, expires_in: null });
 }));
 
 /* ---------- similar songs (A23) ---------- */
