@@ -5,7 +5,7 @@ import { HttpError, audit, newId, wrap } from './util.js';
 import * as engine from './engine.js';
 import { parseEvents, insertEvents } from './events.js';
 export const api = Router();
-
+import { normalizeTimeZone, DEFAULT_TZ } from './tz.js';
 const GENRE_APPLY = `LEFT JOIN LATERAL (SELECT g.genre_id, g.name AS genre
   FROM song_genres sg JOIN genres g ON g.genre_id = sg.genre_id WHERE sg.song_id = s.song_id ORDER BY g.genre_id LIMIT 1) gx ON true`;
 const SONG_COLS = `s.song_id, s.region, s.content_type, s.title, s.duration_sec, s.release_year, s.audio_url, s.popularity,
@@ -76,17 +76,26 @@ api.get('/songs/:id', wrap(async (req, res) => {
 api.use(requireAuth);
 
 api.get('/preferences', wrap(async (req, res) => {
-  const [u] = await query('SELECT region_pref FROM Users WHERE user_id = @u', { u: req.user.id });
-  res.json({ region: u?.region_pref ?? 'all' });
+  const [u] = await query('SELECT region_pref, tz FROM Users WHERE user_id = @u', { u: req.user.id });
+  res.json({ region: u?.region_pref ?? 'all', tz: u?.tz ?? DEFAULT_TZ });
 }));
 api.put('/preferences', wrap(async (req, res) => {
-  const region = req.body?.region;
-  if (!REGIONS.includes(region)) throw new HttpError(400, `region must be one of ${REGIONS.join(', ')}`);
+  const { region, tz } = req.body || {};
+  if (region === undefined && tz === undefined) throw new HttpError(400, 'send region and/or tz');
+  if (region !== undefined && !REGIONS.includes(region)) throw new HttpError(400, `region must be one of ${REGIONS.join(', ')}`);
+  const zone = tz === undefined ? undefined : await normalizeTimeZone(tz);
   await withTx(async (tx) => {
-    await query('UPDATE Users SET region_pref = @r WHERE user_id = @u', { r: region, u: req.user.id }, tx);
-    await audit(tx, req.user.id, 'Users', req.user.id, 'UPDATE', null, { region_pref: region });
+    if (region !== undefined) {
+      await query('UPDATE Users SET region_pref = @r WHERE user_id = @u', { r: region, u: req.user.id }, tx);
+      await audit(tx, req.user.id, 'Users', req.user.id, 'UPDATE', null, { region_pref: region });
+    }
+    if (zone !== undefined) {
+      await query('UPDATE Users SET tz = @z WHERE user_id = @u', { z: zone, u: req.user.id }, tx);
+      await audit(tx, req.user.id, 'Users', req.user.id, 'UPDATE', null, { tz: zone });
+    }
   });
-  res.json({ region });
+  const [u] = await query('SELECT region_pref, tz FROM Users WHERE user_id = @u', { u: req.user.id });
+  res.json({ region: u.region_pref, tz: u.tz });
 }));
 
 api.get('/history', wrap(async (req, res) => res.json(await query(
