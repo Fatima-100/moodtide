@@ -8,6 +8,7 @@ export const api = Router();
 import { normalizeTimeZone, DEFAULT_TZ } from './tz.js';
 import { checkAndCount } from './plans.js';
 import { billing, getMyPlan } from './billing.js';
+import { adminSaas } from './admin-saas.js';
 const GENRE_APPLY = `LEFT JOIN LATERAL (SELECT g.genre_id, g.name AS genre
   FROM song_genres sg JOIN genres g ON g.genre_id = sg.genre_id WHERE sg.song_id = s.song_id ORDER BY g.genre_id LIMIT 1) gx ON true`;
 const SONG_COLS = `s.song_id, s.region, s.content_type, s.title, s.duration_sec, s.release_year, s.audio_url, s.popularity,
@@ -392,6 +393,7 @@ api.use('/billing', billing);
 /* ---------- admin ---------- */
 export const admin = Router();
 admin.use(requireAdmin);
+admin.use(adminSaas); // A27: users, usage, subscriptions, plan changes, metrics
 
 admin.get('/weights', wrap(async (_req, res) => res.json(await query('SELECT weight_id, weight_name, weight_value, updated_by, updated_at FROM Scoring_Weights'))));
 
