@@ -42,6 +42,6 @@ Response `201 { "accepted": 4 }`. If any event is invalid the whole request fail
 | `add_to_playlist` | song added to a playlist | | `playlist_id` |
 | `share` | song shared | | `channel` |
 | `checkin` | mood check-in | energy 1 to 5 | `mood` |
-| `not_my_mood` | "this does not fit my mood" | | `mood`: the current mood |
+| `not_my_mood` | written by the server when you call `POST /api/mood/correct` (do not send it as well) | | `mood`, `corrected_mood` |
 
 Keep the same names across screens: the weekly analysis (A22 onwards) reads these fields.

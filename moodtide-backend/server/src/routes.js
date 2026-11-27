@@ -157,21 +157,53 @@ api.post('/checkins', wrap(async (req, res) => {
   res.status(201).json(out);
 }));
 
+/** "Not my mood": save the correction and the event, and rebuild suggestions in ONE transaction (A22) */
+api.post('/mood/correct', wrap(async (req, res) => {
+  const { mood } = req.body || {};
+  if (!Object.hasOwn(engine.MOOD_COORDINATES, mood ?? '')) throw new HttpError(400, `mood must be one of ${Object.keys(engine.MOOD_COORDINATES).join(', ')}`);
+  const out = await withTx(async (tx) => {
+    const [previous] = await query(
+      'SELECT score_id, detected_mood FROM Mood_Scores WHERE user_id = @u ORDER BY calculated_at DESC LIMIT 1', { u: req.user.id }, tx);
+    const id = newId('cor');
+    await query(
+      `INSERT INTO Mood_Corrections (correction_id, user_id, score_id, previous_mood, corrected_mood)
+       VALUES (@id, @u, @s, @p, @m)`,
+      { id, u: req.user.id, s: previous?.score_id ?? null, p: previous?.detected_mood ?? null, m: mood }, tx);
+    await audit(tx, req.user.id, 'Mood_Corrections', id, 'INSERT', null, { mood });
+    await insertEvents(req.user.id, [{
+      session_id: null, event_type: 'not_my_mood', song_id: null, suggestion_id: null, position: null, value: null, at: null,
+      context: JSON.stringify({ mood: previous?.detected_mood ?? null, corrected_mood: mood }),
+    }], tx);
+    const detected = await engine.detectMood(req.user.id, tx);
+    const batchId = await engine.generateSuggestions(req.user.id, tx);
+    return { correction_id: id, detected, ...(await loadBatch(batchId, tx)) };
+  });
+  res.status(201).json(out);
+}));
+
 /* ---------- suggestions ---------- */
-api.get('/suggestions', wrap(async (req, res) => {
-  const [batch] = await query('SELECT batch_id, variant, created_at FROM Suggestion_Batches WHERE user_id = @u ORDER BY created_at DESC LIMIT 1', { u: req.user.id });
-  if (!batch) return res.json({ batch: null, suggestions: [] });
+// One batch with its songs and reasons. target_mood is the mood the batch was built for.
+async function loadBatch(batchId, tx = null) {
+  const [batch] = await query(
+    `SELECT b.batch_id, b.variant, b.created_at, m.detected_mood AS target_mood
+     FROM Suggestion_Batches b LEFT JOIN Mood_Scores m ON m.score_id = b.score_id WHERE b.batch_id = @b`, { b: batchId }, tx);
   const sugs = await query(
     `SELECT sg.suggestion_id, sg.rank_position, sg.total_score, sg.taste_score, sg.mood_match_score, sg.similar_users_score,
             sg.freshness_score, sg.recent_penalty, sg.is_exploration, sg.outcome, ${SONG_COLS}
      FROM Suggestions sg JOIN Songs s ON s.song_id = sg.song_id
      JOIN Artists ar ON ar.artist_id = s.artist_id LEFT JOIN Albums al ON al.album_id = s.album_id
      LEFT JOIN Song_Features f ON f.song_id = s.song_id ${GENRE_APPLY}
-     WHERE sg.batch_id = @b ORDER BY sg.rank_position`, { b: batch.batch_id });
+     WHERE sg.batch_id = @b ORDER BY sg.rank_position`, { b: batchId }, tx);
   const reasons = await query(
     `SELECT r.suggestion_id, r.reason_type, r.reason_text, r.contribution FROM Suggestion_Reasons r
-     JOIN Suggestions sg ON sg.suggestion_id = r.suggestion_id WHERE sg.batch_id = @b`, { b: batch.batch_id });
-  res.json({ batch, suggestions: sugs.map((s) => ({ ...s, reasons: reasons.filter((r) => r.suggestion_id === s.suggestion_id) })) });
+     JOIN Suggestions sg ON sg.suggestion_id = r.suggestion_id WHERE sg.batch_id = @b`, { b: batchId }, tx);
+  return { batch, suggestions: sugs.map((s) => ({ ...s, reasons: reasons.filter((r) => r.suggestion_id === s.suggestion_id) })) };
+}
+
+api.get('/suggestions', wrap(async (req, res) => {
+  const [latest] = await query('SELECT batch_id FROM Suggestion_Batches WHERE user_id = @u ORDER BY created_at DESC LIMIT 1', { u: req.user.id });
+  if (!latest) return res.json({ batch: null, suggestions: [] });
+  res.json(await loadBatch(latest.batch_id));
 }));
 
 api.post('/suggestions/generate', wrap(async (req, res) => {
