@@ -5,6 +5,7 @@ import { query, withTx } from './db.js';
 import { HttpError, audit, newId, sha256, wrap } from './util.js';
 import { config } from './config.js';
 import { tryNormalizeTimeZone, DEFAULT_TZ } from './tz.js';
+import { startFreeSubscription } from './plans.js';
 
 const SECRET = config.jwtSecret; // validated at startup (config.js): no built-in fallback
 const SESSION_DAYS = 7;
@@ -61,6 +62,7 @@ authRouter.post('/register', wrap(async (req, res) => {
       { id: userId, n: username, e: email.toLowerCase(), p: bcrypt.hashSync(password, 10), g: group, tz: zone }, tx
     );
     await audit(tx, userId, 'Users', userId, 'INSERT', null, { email, group });
+    await startFreeSubscription(tx, userId); // A24: every new user starts on the Free plan, in the same transaction
   });
   const token = await startSession(userId, 'user');
   res.status(201).json({ token, user: { user_id: userId, username, email, role: 'user', experiment_group: group, tz: zone } });
