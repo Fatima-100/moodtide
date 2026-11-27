@@ -10,6 +10,18 @@ import { checkAndCount } from './plans.js';
 import { billing, getMyPlan } from './billing.js';
 import { adminSaas } from './admin-saas.js';
 import { getClipFeed } from './feed.js';
+import {
+  validateBody,
+  preferencesSchema,
+  checkinSchema,
+  moodCorrectSchema,
+  playSchema,
+  ratingSchema,
+  playlistCreateSchema,
+  playlistAddSongSchema,
+  reportSchema,
+  feedbackSchema,
+} from './schemas.js';
 const GENRE_APPLY = `LEFT JOIN LATERAL (SELECT g.genre_id, g.name AS genre
   FROM song_genres sg JOIN genres g ON g.genre_id = sg.genre_id WHERE sg.song_id = s.song_id ORDER BY g.genre_id LIMIT 1) gx ON true`;
 const SONG_COLS = `s.song_id, s.region, s.content_type, s.title, s.duration_sec, s.release_year, s.audio_url, s.popularity,
@@ -128,7 +140,7 @@ api.get('/preferences', wrap(async (req, res) => {
   const [u] = await query('SELECT region_pref, tz FROM Users WHERE user_id = @u', { u: req.user.id });
   res.json({ region: u?.region_pref ?? 'all', tz: u?.tz ?? DEFAULT_TZ });
 }));
-api.put('/preferences', wrap(async (req, res) => {
+api.put('/preferences', validateBody(preferencesSchema), wrap(async (req, res) => {
   const { region, tz } = req.body || {};
   if (region === undefined && tz === undefined) throw new HttpError(400, 'send region and/or tz');
   if (region !== undefined && !REGIONS.includes(region)) throw new HttpError(400, `region must be one of ${REGIONS.join(', ')}`);
@@ -152,12 +164,12 @@ api.get('/history', wrap(async (req, res) => res.json(await query(
    FROM Listening_History h JOIN Songs s ON s.song_id = h.song_id JOIN Artists ar ON ar.artist_id = s.artist_id
    WHERE h.user_id = @u ORDER BY h.played_at DESC LIMIT 100`, { u: req.user.id }))));
 
-api.post('/plays', wrap(async (req, res) => {
+api.post('/plays', validateBody(playSchema), wrap(async (req, res) => {
   if (!req.body?.songId) throw new HttpError(400, 'songId required');
   res.status(201).json(await withTx((tx) => engine.recordPlay(tx, req.user.id, req.body)));
 }));
 
-api.post('/ratings', wrap(async (req, res) => {
+api.post('/ratings', validateBody(ratingSchema), wrap(async (req, res) => {
   const { songId, stars, suggestionId = null } = req.body || {};
   const id = await withTx((tx) => engine.recordRating(tx, req.user.id, songId, Number(stars), suggestionId));
   res.status(201).json({ rating_id: id });
@@ -181,7 +193,7 @@ function cleanText(value, field, max, required = false) {
 }
 
 /** "Report this track". Sending the same open report twice does not create a second one (200 instead of 201). */
-api.post('/reports', wrap(async (req, res) => {
+api.post('/reports', validateBody(reportSchema), wrap(async (req, res) => {
   const { songId, reason, note } = req.body || {};
   if (typeof songId !== 'string' || !songId) throw new HttpError(400, 'songId required');
   if (!REPORT_REASONS.includes(reason)) throw new HttpError(400, `reason must be one of ${REPORT_REASONS.join(', ')}`);
@@ -207,7 +219,7 @@ api.post('/reports', wrap(async (req, res) => {
 }));
 
 /** Tester feedback: which page, 1 to 5 stars, optional text. */
-api.post('/feedback', wrap(async (req, res) => {
+api.post('/feedback', validateBody(feedbackSchema), wrap(async (req, res) => {
   const { page, rating, text } = req.body || {};
   const where = cleanText(page, 'page', 100, true);
   if (!Number.isInteger(rating) || rating < 1 || rating > 5) throw new HttpError(400, 'rating must be an integer from 1 to 5');
@@ -244,7 +256,7 @@ api.get('/mood/checkins', wrap(async (req, res) => res.json(await query(
   'SELECT checkin_id, mood_label, energy_level, checked_at FROM Mood_Checkins WHERE user_id = @u ORDER BY checked_at DESC LIMIT 50', { u: req.user.id }))));
 
 /** Manual check-in, then auto-detect mood and refresh suggestions in ONE transaction */
-api.post('/checkins', wrap(async (req, res) => {
+api.post('/checkins', validateBody(checkinSchema), wrap(async (req, res) => {
   const { mood, energy = 3 } = req.body || {};
   if (!engine.MOOD_COORDINATES[mood]) throw new HttpError(400, `mood must be one of ${Object.keys(engine.MOOD_COORDINATES).join(', ')}`);
   if (!Number.isInteger(energy) || energy < 1 || energy > 5) throw new HttpError(400, 'energy must be an integer 1-5');
@@ -262,7 +274,7 @@ api.post('/checkins', wrap(async (req, res) => {
 }));
 
 /** "Not my mood": save the correction and the event, and rebuild suggestions in ONE transaction (A22) */
-api.post('/mood/correct', wrap(async (req, res) => {
+api.post('/mood/correct', validateBody(moodCorrectSchema), wrap(async (req, res) => {
   const { mood } = req.body || {};
   if (!Object.hasOwn(engine.MOOD_COORDINATES, mood ?? '')) throw new HttpError(400, `mood must be one of ${Object.keys(engine.MOOD_COORDINATES).join(', ')}`);
   const out = await withTx(async (tx) => {
@@ -330,7 +342,7 @@ api.get('/playlists', wrap(async (req, res) => res.json(await query(
   `SELECT p.*, (SELECT COUNT(*) FROM Playlist_Songs ps WHERE ps.playlist_id = p.playlist_id) AS song_count
    FROM Playlists p WHERE p.user_id = @u ORDER BY p.created_at DESC`, { u: req.user.id }))));
 
-api.post('/playlists', wrap(async (req, res) => {
+api.post('/playlists', validateBody(playlistCreateSchema), wrap(async (req, res) => {
   const { name, description = '' } = req.body || {};
   if (!name) throw new HttpError(400, 'name required');
   if (String(name).length > 100) throw new HttpError(400, 'name must be 100 characters or fewer');
@@ -368,7 +380,7 @@ api.get('/playlists/:id', wrap(async (req, res) => {
   res.json({ ...pl, songs });
 }));
 
-api.post('/playlists/:id/songs', wrap(async (req, res) => {
+api.post('/playlists/:id/songs', validateBody(playlistAddSongSchema), wrap(async (req, res) => {
   const position = await withTx((tx) => engine.addToPlaylist(tx, req.user.id, req.params.id, req.body?.songId));
   res.status(201).json({ position });
 }));
