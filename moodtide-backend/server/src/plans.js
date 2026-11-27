@@ -3,6 +3,16 @@ import { query } from './db.js';
 import { HttpError, audit, newId } from './util.js';
 
 export const FREE_PLAN_ID = 'plan_free';
+export const PREMIUM_PLAN_ID = 'plan_premium';
+
+/**
+ * SQL condition for "this subscription row (alias s) is in force right now":
+ *  - active and not past its end date, or
+ *  - cancelled at period end (A26) but its paid period has not ended yet.
+ * Anything else (expired, cancelled and over, no row at all) means the user is on Free.
+ */
+export const IN_FORCE = `((s.status = 'active' AND (s.ends_at IS NULL OR s.ends_at > now()))
+  OR (s.status = 'cancelled' AND s.ends_at IS NOT NULL AND s.ends_at > now()))`;
 
 /**
  * Put a user on the Free plan. Pass the registration's transaction: if anything after this fails,
@@ -35,7 +45,7 @@ export class LimitError extends HttpError {
  * climbs above it), and an action that fails for another reason does not use up the user's allowance.
  *
  * "Today" is the user's own calendar day (users.tz, default Asia/Karachi).
- * The plan is the user's active subscription (not past its end date); no active subscription counts as Free.
+ * The plan is the user's subscription in force (see IN_FORCE); none in force counts as Free.
  * A NULL limit means unlimited: the use is still counted (A26 shows today's usage) but never blocked.
  */
 export async function checkAndCount(tx, userId, metric) {
@@ -52,8 +62,8 @@ export async function checkAndCount(tx, userId, metric) {
   const [lim] = await query(
     `SELECT limit_value FROM plan_limits
      WHERE metric = @m AND plan_id = COALESCE(
-       (SELECT plan_id FROM subscriptions
-        WHERE user_id = @u AND status = 'active' AND (ends_at IS NULL OR ends_at > now())), @free)`,
+       (SELECT s.plan_id FROM subscriptions s WHERE s.user_id = @u AND ${IN_FORCE}
+        ORDER BY s.started_at DESC LIMIT 1), @free)`,
     { u: userId, m: metric, free: FREE_PLAN_ID }, tx);
   const limit = lim?.limit_value ?? null;
   if (limit !== null && used > limit) throw new LimitError(metric, limit, limit);
