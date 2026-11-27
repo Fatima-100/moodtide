@@ -95,6 +95,28 @@ export async function detectMood(userId, tx, { preferCheckin = true, now = null 
   return { score_id: scoreId, detected_mood: mood, mood_score: score, rule, time_of_day: timeOfDay, avg_energy: avgEnergy, avg_tempo: avgTempo, latest_checkin: checkin ?? null };
 }
 
+/* ------------------------------------------------------------------- mood match */
+// A20: for each tagged song, how strongly its tags point to this mood (0 to 1).
+// It is the weighted share of the song's mapped tags: unmapped tags (country, instrument...) do not count.
+// A song with no mapped tag is not in the result.
+export async function tagScores(mood, tx) {
+  const rows = await query(
+    `SELECT st.song_id, (SUM(st.weight * COALESCE(m.weight, 0)) / SUM(st.weight))::float8 AS tag_score
+     FROM song_tags st LEFT JOIN tag_mood_map m ON m.tag = st.tag AND m.mood = @mood
+     WHERE st.weight > 0 AND EXISTS (SELECT 1 FROM tag_mood_map k WHERE k.tag = st.tag)
+     GROUP BY st.song_id`, { mood }, tx);
+  return new Map(rows.map((r) => [r.song_id, r.tag_score]));
+}
+
+// Blend of the audio features (distance to the mood's energy and happiness) and the tags.
+// A song without a tag score is judged on its features alone, so missing tags are not a penalty.
+export function moodMatch(song, target, tagScore, wTag) {
+  const dist = Math.hypot(song.energy - target.energy, song.happiness - target.happiness);
+  const featureScore = Math.max(0.05, 1 - dist);
+  if (tagScore == null) return featureScore;
+  return (1 - wTag) * featureScore + wTag * tagScore;
+}
+
 /* ------------------------------------------------------------ generateSuggestions */
 export async function generateSuggestions(userId, tx) {
   const [user] = await query('SELECT user_id, experiment_group, region_pref FROM Users WHERE user_id = @u', { u: userId }, tx);
@@ -108,6 +130,7 @@ export async function generateSuggestions(userId, tx) {
   const w_taste = W('w_taste', 0.35), w_similar = W('w_similar', 0.15), w_fresh = W('w_fresh', 0.10), w_recent = W('w_recent', 0.20);
   const isGroupA = user.experiment_group === 'A';
   const w_mood = isGroupA ? 0 : W('w_mood', 0.30); // A/B: cohort A is taste-only
+  const w_tag = clamp(W('w_tag', 0.4), 0, 1);      // share of the mood match that comes from tags (A20)
 
   const [latest] = await query('SELECT score_id, detected_mood FROM Mood_Scores WHERE user_id = @u ORDER BY calculated_at DESC LIMIT 1', { u: userId }, tx);
   const mood = latest?.detected_mood ?? 'calm';
@@ -142,13 +165,13 @@ export async function generateSuggestions(userId, tx) {
     `SELECT s.song_id, f.energy, s.region, f.happiness, f.tempo, gx.genre_id, gx.genre_name
      FROM Songs s JOIN Song_Features f ON f.song_id = s.song_id ${SONG_GENRE_APPLY}
      WHERE s.is_active = true AND s.content_type = 'music'`, {}, tx);
+  const byTags = await tagScores(mood, tx);
 
   const scored = songs.map((s) => {
     const genreId = s.genre_id ?? 'gen_1';
     const genre = s.genre_name ?? 'Music';
     const taste_s = clamp((affinity.get(genreId) ?? 2.5) / 5, 0.1, 1);
-    const dist = Math.hypot(s.energy - target.energy, s.happiness - target.happiness);
-    const mood_s = Math.max(0.05, 1 - dist);
+    const mood_s = moodMatch(s, target, byTags.get(s.song_id), w_tag);
     const similar_s = likedSet.has(s.song_id) ? 0.95 : 0.2;
     const fresh_s = listened.has(s.song_id) ? 0.3 : 0.9;
     const penalty = recent.has(s.song_id) ? 0.8 : 0;

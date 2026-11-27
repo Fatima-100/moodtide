@@ -168,7 +168,7 @@ CREATE TABLE experiments (
 
 CREATE TABLE scoring_weights (
     weight_id     text          PRIMARY KEY,
-    weight_name   text          NOT NULL UNIQUE,         -- w_taste, w_mood, w_similar, w_fresh, w_recent
+    weight_name   text          NOT NULL UNIQUE,         -- w_taste, w_mood, w_similar, w_fresh, w_recent, w_tag
     weight_value  numeric(6,3)  NOT NULL,
     updated_by    text          REFERENCES users(user_id) ON DELETE SET NULL,
     updated_at    timestamptz   NOT NULL DEFAULT now()
