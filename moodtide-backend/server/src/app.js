@@ -6,6 +6,7 @@ import helmet from 'helmet';
 import { authRouter, requireAuth } from './auth.js';
 import { api, admin } from './routes.js';
 import { query } from './db.js';
+import { authLimiter, apiLimiter } from './ratelimit.js';
 
 export const app = express();
 // Behind a hosting proxy (Render, etc.) the real visitor address is in a header; needed for rate limiting later (A30).
@@ -15,10 +16,16 @@ app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } })); // s
 app.use(cors({ origin: config.clientOrigins }));                             // only your own website may call the API from a browser
 app.use(express.json({ limit: '100kb' }));                                   // refuse huge request bodies
 
+// A30: Global rate limiting (300 req / 15 min per IP) on /api routes
+app.use('/api', apiLimiter);
+
 app.get('/api/health', async (_req, res) => {
   try { await query('SELECT 1 AS ok'); res.json({ ok: true, db: 'connected' }); }
   catch (e) { res.status(500).json({ ok: false, db: config.isProduction ? 'unreachable' : e.message }); }
 });
+// A30: Auth rate limiting (10 attempts / 15 min per IP) on login and register
+app.use('/api/auth/register', authLimiter);
+app.use('/api/auth/login', authLimiter);
 app.use('/api/auth', authRouter);
 app.use('/api/admin', requireAuth, admin);
 app.use('/api', api);

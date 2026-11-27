@@ -5,6 +5,7 @@ import { Router } from 'express';
 import { query, withTx } from './db.js';
 import { HttpError, audit, newId, wrap } from './util.js';
 import { IN_FORCE, FREE_PLAN_ID, PREMIUM_PLAN_ID } from './plans.js';
+import { validateBody, checkoutSchema } from './schemas.js';
 
 export const billing = Router();   // mounted by routes.js at /api/billing, after requireAuth
 
@@ -47,7 +48,7 @@ function checkCard({ card_number, expiry, cvc }) {
 const invoiceOut = (r) => ({ invoice_id: r.invoice_id, amount_mock: r.amount_mock, status: r.status, created_at: r.created_at });
 
 /** POST /api/billing/checkout  { plan_id, card_number, expiry, cvc } */
-billing.post('/checkout', wrap(async (req, res) => {
+billing.post('/checkout', validateBody(checkoutSchema), wrap(async (req, res) => {
   const body = req.body || {};
   const planId = body.plan_id;
   const cardResult = checkCard(body);      // the card fields stop here

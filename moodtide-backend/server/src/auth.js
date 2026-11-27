@@ -6,6 +6,7 @@ import { HttpError, audit, newId, sha256, wrap } from './util.js';
 import { config } from './config.js';
 import { tryNormalizeTimeZone, DEFAULT_TZ } from './tz.js';
 import { startFreeSubscription } from './plans.js';
+import { validateBody, registerSchema, loginSchema } from './schemas.js';
 
 const SECRET = config.jwtSecret; // validated at startup (config.js): no built-in fallback
 const SESSION_DAYS = 7;
@@ -47,7 +48,7 @@ const publicUser = (u) => ({
 
 export const authRouter = Router();
 
-authRouter.post('/register', wrap(async (req, res) => {
+authRouter.post('/register', validateBody(registerSchema), wrap(async (req, res) => {
   const { username, email, password, tz } = req.body || {};
   if (!username || !email || !password || password.length < 6)
     throw new HttpError(400, 'username, email and a password of 6+ characters are required');
@@ -68,7 +69,7 @@ authRouter.post('/register', wrap(async (req, res) => {
   res.status(201).json({ token, user: { user_id: userId, username, email, role: 'user', experiment_group: group, tz: zone } });
 }));
 
-authRouter.post('/login', wrap(async (req, res) => {
+authRouter.post('/login', validateBody(loginSchema), wrap(async (req, res) => {
   const { email, password, tz } = req.body || {};
   const [u] = await query(
     `SELECT u.*, r.role_name FROM Users u JOIN Roles r ON r.role_id = u.role_id WHERE lower(u.email) = @e`,
