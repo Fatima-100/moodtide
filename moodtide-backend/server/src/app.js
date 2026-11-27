@@ -27,6 +27,7 @@ app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
 // PostgreSQL error codes -> friendly HTTP errors (details are shown only outside production)
 app.use((err, _req, res, _next) => {
   const detail = config.isProduction ? undefined : err.message;
+  if (err.code === 'LIMIT_REACHED') return res.status(err.status).json(err.body); // A25: 402 { error, code, metric, limit, used }
   if (err.type === 'entity.too.large') return res.status(413).json({ error: 'Request body too large' });
   if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Request body is not valid JSON' });
   if (err.code === '23505') return res.status(409).json({ error: 'Already exists (unique/primary key violation)', detail });

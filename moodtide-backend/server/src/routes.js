@@ -6,6 +6,7 @@ import * as engine from './engine.js';
 import { parseEvents, insertEvents } from './events.js';
 export const api = Router();
 import { normalizeTimeZone, DEFAULT_TZ } from './tz.js';
+import { checkAndCount } from './plans.js';
 const GENRE_APPLY = `LEFT JOIN LATERAL (SELECT g.genre_id, g.name AS genre
   FROM song_genres sg JOIN genres g ON g.genre_id = sg.genre_id WHERE sg.song_id = s.song_id ORDER BY g.genre_id LIMIT 1) gx ON true`;
 const SONG_COLS = `s.song_id, s.region, s.content_type, s.title, s.duration_sec, s.release_year, s.audio_url, s.popularity,
@@ -307,7 +308,10 @@ api.get('/suggestions', wrap(async (req, res) => {
 }));
 
 api.post('/suggestions/generate', wrap(async (req, res) => {
-  const batchId = await withTx((tx) => engine.generateSuggestions(req.user.id, tx));
+  const batchId = await withTx(async (tx) => {
+    await checkAndCount(tx, req.user.id, 'refreshes'); // A25
+    return engine.generateSuggestions(req.user.id, tx);
+  });
   res.status(201).json({ batch_id: batchId });
 }));
 
@@ -322,6 +326,7 @@ api.post('/playlists', wrap(async (req, res) => {
   if (String(name).length > 100) throw new HttpError(400, 'name must be 100 characters or fewer');
   const id = newId('pl');
   await withTx(async (tx) => {
+    await checkAndCount(tx, req.user.id, 'playlists'); // A25
     await query(
       `INSERT INTO Playlists (playlist_id, user_id, name, description, playlist_type, start_mood, target_mood, created_at)
        VALUES (@id, @u, @n, @d, 'normal', NULL, NULL, now())`, { id, u: req.user.id, n: name, d: description ?? '' }, tx);
@@ -335,7 +340,10 @@ api.post('/playlists/journey', wrap(async (req, res) => {
   const { from, to, region = 'all' } = req.body || {};
   const allowed = [...REGIONS, 'not_pakistani'];
   if (!allowed.includes(region)) throw new HttpError(400, `region must be one of ${allowed.join(', ')}`);
-  const id = await withTx((tx) => engine.buildMoodJourney(req.user.id, from, to, tx, region));
+  const id = await withTx(async (tx) => {
+    await checkAndCount(tx, req.user.id, 'journeys'); // A25
+    return engine.buildMoodJourney(req.user.id, from, to, tx, region);
+  });
   res.status(201).json({ playlist_id: id });
 }));
 
