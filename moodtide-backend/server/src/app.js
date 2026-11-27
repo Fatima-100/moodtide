@@ -7,7 +7,7 @@ import { authRouter, requireAuth } from './auth.js';
 import { api, admin } from './routes.js';
 import { query } from './db.js';
 import { authLimiter, apiLimiter } from './ratelimit.js';
-
+import { onboardingRouter } from './onboarding.js';
 export const app = express();
 // Behind a hosting proxy (Render, etc.) the real visitor address is in a header; needed for rate limiting later (A30).
 app.set('trust proxy', config.isProduction ? 1 : false);
@@ -28,6 +28,7 @@ app.use('/api/auth/register', authLimiter);
 app.use('/api/auth/login', authLimiter);
 app.use('/api/auth', authRouter);
 app.use('/api/admin', requireAuth, admin);
+app.use('/api/onboarding', requireAuth, onboardingRouter);
 app.use('/api', api);
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found' }));
 
