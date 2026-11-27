@@ -34,6 +34,21 @@ const SONG_GENRE_APPLY = `LEFT JOIN LATERAL (
   FROM song_genres sg JOIN genres g ON g.genre_id = sg.genre_id
   WHERE sg.song_id = s.song_id ORDER BY g.genre_id LIMIT 1) gx ON true`;
 
+/* ------------------------------------------------------------------ recentMood */
+// What the user last TOLD us in the past 6 hours: a check-in, or a "not my mood" correction (A22),
+// whichever is newer. A correction has no energy level.
+export async function recentMood(userId, tx) {
+  const [row] = await query(
+    `SELECT mood_label, energy_level, source FROM (
+       SELECT mood_label, energy_level, checked_at AS told_at, 'checkin' AS source FROM Mood_Checkins
+       WHERE user_id = @u AND checked_at >= now() - interval '6 hours'
+       UNION ALL
+       SELECT corrected_mood, NULL::int, created_at, 'correction' FROM Mood_Corrections
+       WHERE user_id = @u AND created_at >= now() - interval '6 hours'
+     ) told ORDER BY told_at DESC LIMIT 1`, { u: userId }, tx);
+  return row ?? null;
+}
+
 /* ------------------------------------------------------------------ detectMood */
 // `now` (an ISO time) is only for tests: it pretends the current moment is that instant.
 export async function detectMood(userId, tx, { preferCheckin = true, now = null } = {}) {
@@ -70,17 +85,18 @@ export async function detectMood(userId, tx, { preferCheckin = true, now = null 
     'SELECT checkin_id, mood_label, energy_level FROM Mood_Checkins WHERE user_id = @u ORDER BY checked_at DESC LIMIT 1',
     { u: userId }, tx);
 
-  // A check-in from the last 6 hours is what the user told us they feel, so it wins over the history rules.
+  // A check-in or correction from the last 6 hours is what the user told us they feel, so it wins over the history rules.
   // (The "Re-check my mood" button passes preferCheckin = false to detect from listening history only.)
+  let corrected = false;
   if (preferCheckin) {
-    const [recent] = await query(
-      `SELECT mood_label, energy_level FROM Mood_Checkins
-       WHERE user_id = @u AND checked_at >= now() - interval '6 hours' ORDER BY checked_at DESC LIMIT 1`,
-      { u: userId }, tx);
+    const recent = await recentMood(userId, tx);
     if (recent) {
       mood = recent.mood_label;
-      score = recent.energy_level * 20;
-      rule = `You told us you feel ${recent.mood_label} (energy ${recent.energy_level}/5).`;
+      corrected = recent.source === 'correction';
+      score = corrected ? 60 : recent.energy_level * 20;   // 60 = a middle energy of 3/5
+      rule = corrected
+        ? `You corrected your mood to ${recent.mood_label}.`
+        : `You told us you feel ${recent.mood_label} (energy ${recent.energy_level}/5).`;
     }
   }
 
@@ -89,7 +105,7 @@ export async function detectMood(userId, tx, { preferCheckin = true, now = null 
     `INSERT INTO Mood_Scores (score_id, user_id, calculated_at, detected_mood, mood_score, skip_count, replay_count,
                               time_of_day, avg_energy, avg_tempo, checkin_id)
      VALUES (@id, @u, now(), @m, @s, @sk, @rp, @t, @ae, @at, @c)`,
-    { id: scoreId, u: userId, m: mood, s: score, sk: skipCount, rp: replayCount, t: timeOfDay, ae: avgEnergy, at: avgTempo, c: checkin?.checkin_id ?? null },
+    { id: scoreId, u: userId, m: mood, s: score, sk: skipCount, rp: replayCount, t: timeOfDay, ae: avgEnergy, at: avgTempo, c: corrected ? null : (checkin?.checkin_id ?? null) },
     tx);
   await audit(tx, userId, 'Mood_Scores', scoreId, 'INSERT', null, { mood, score });
   return { score_id: scoreId, detected_mood: mood, mood_score: score, rule, time_of_day: timeOfDay, avg_energy: avgEnergy, avg_tempo: avgTempo, latest_checkin: checkin ?? null };
@@ -136,11 +152,8 @@ export async function generateSuggestions(userId, tx) {
   const mood = latest?.detected_mood ?? 'calm';
   const base = MOOD_COORDINATES[mood];
   // if the user just checked in with this mood, the 1-5 energy slider nudges the target energy
-  const [ck] = await query(
-    `SELECT mood_label, energy_level FROM Mood_Checkins
-     WHERE user_id = @u AND checked_at >= now() - interval '6 hours' ORDER BY checked_at DESC LIMIT 1`,
-    { u: userId }, tx);
-  const target = ck && ck.mood_label === mood
+  const ck = await recentMood(userId, tx);
+  const target = ck && ck.mood_label === mood && ck.energy_level != null
     ? { ...base, energy: clamp(0.7 * base.energy + 0.3 * (ck.energy_level / 5), 0, 1) }
     : base;
 
