@@ -1,82 +1,82 @@
 #!/usr/bin/env node
 // =====================================================================
-// MoodTide: find out which step of a mood check-in is slow or stuck.
+// MoodTide: how long does a mood check-in take?   (A21)
+// Location: moodtide-backend/server/scripts/diagnose-checkin.mjs
 //
-// Put this file in:  moodtide-backend/server/scripts/diagnose-checkin.mjs
-// Run it from:       moodtide-backend/server
+// From the server folder:
+//   node scripts/diagnose-checkin.mjs                          (fatima@moodtide.com, 20 runs)
+//   node scripts/diagnose-checkin.mjs someone@mail.com 50      (another user, 50 runs)
 //
-//   node scripts/diagnose-checkin.mjs            (uses the user "fatima1")
-//   node scripts/diagnose-checkin.mjs fatima     (another username)
-//
-// It runs the same code the app runs (engine.js) and prints how long each step takes.
-// Nothing is saved: the check-in steps run inside a transaction that is rolled back.
+// It runs the same engine code as POST /api/checkins and reports the median and 95th percentile,
+// plus how many statements go to the database. Every run is rolled back, so nothing is saved
+// (the time to COMMIT is therefore not included).
+// To measure a hosted database, set DATABASE_URL (and DB_SSL=true if it needs SSL) first.
 // =====================================================================
-import 'dotenv/config';
-import { query, withTx } from '../src/db.js';
-import * as engine from '../src/engine.js';
+import { query, withTx, closePool } from '../src/db.js';
+import { detectMood, generateSuggestions } from '../src/engine.js';
+import { audit, newId } from '../src/util.js';
 
-const ROLLBACK = 'ROLLBACK_ON_PURPOSE';
+const email = process.argv[2] || 'fatima@moodtide.com';
+const runs = Math.max(1, Number(process.argv[3]) || 20);
+const TARGET_MS = 700;
 
-async function timed(label, fn) {
-  const start = Date.now();
+const ms = (start) => performance.now() - start;
+// nearest-rank percentile
+const percentile = (list, p) => [...list].sort((a, b) => a - b)[Math.ceil((p / 100) * list.length) - 1];
+
+async function checkIn(userId) {
+  const steps = {};
+  let statements = 0;
+  const undo = new Error('rollback');
+  const started = performance.now();
   try {
-    const result = await fn();
-    console.log(`${label.padEnd(40)} ${String(Date.now() - start).padStart(7)} ms   ok`);
-    return result;
+    await withTx(async (client) => {
+      const tx = { query: (...args) => { statements++; return client.query(...args); } };
+      let t = performance.now();
+      const id = newId('chk');
+      await query('INSERT INTO Mood_Checkins (checkin_id, user_id, mood_label, energy_level) VALUES (@id, @u, @m, @e)',
+        { id, u: userId, m: 'calm', e: 3 }, tx);
+      await audit(tx, userId, 'Mood_Checkins', id, 'INSERT', null, { mood: 'calm', energy: 3 });
+      steps.save = ms(t);
+      t = performance.now();
+      await detectMood(userId, tx);
+      steps.detect = ms(t);
+      t = performance.now();
+      await generateSuggestions(userId, tx);
+      steps.suggest = ms(t);
+      throw undo;
+    });
   } catch (e) {
-    if (e.message === ROLLBACK) {
-      console.log(`${label.padEnd(40)} ${String(Date.now() - start).padStart(7)} ms   ok (rolled back)`);
-      return null;
-    }
-    console.log(`${label.padEnd(40)} ${String(Date.now() - start).padStart(7)} ms   FAILED: ${e.message}`);
-    return null;
+    if (e !== undo) throw e;
   }
+  return { total: ms(started), statements, ...steps };
 }
 
-const username = process.argv[2] || 'fatima1';
-console.log(`Timing a check-in for "${username}"\n`);
+try {
+  const [user] = await query('SELECT user_id FROM users WHERE email = @e', { e: email });
+  if (!user) throw new Error(`No user with the email "${email}". Usage: node scripts/diagnose-checkin.mjs <email> [runs]`);
 
-await timed('connect + SELECT 1', () => query('SELECT 1 AS x'));
+  const pings = [];
+  for (let i = 0; i < 5; i++) { const t = performance.now(); await query('SELECT 1'); pings.push(ms(t)); }
 
-const [u] = (await timed('find user', () => query('SELECT user_id FROM Users WHERE username = @n', { n: username }))) || [];
-if (!u) {
-  console.log(`\nNo user named "${username}". Pass an existing username: node scripts/diagnose-checkin.mjs <username>`);
-  process.exit(1);
+  await checkIn(user.user_id); // warm-up, not counted
+  const results = [];
+  for (let i = 0; i < runs; i++) results.push(await checkIn(user.user_id));
+
+  console.log(`Check-in timing for ${email}, ${runs} runs`);
+  console.log(`Database round trip (SELECT 1): ${percentile(pings, 50).toFixed(1)} ms`);
+  console.log(`Statements per check-in:        ${results[0].statements} (plus BEGIN and ROLLBACK)\n`);
+  const table = {};
+  for (const [key, label] of [['save', 'save check-in'], ['detect', 'detectMood'], ['suggest', 'generateSuggestions'], ['total', 'TOTAL']]) {
+    const values = results.map((r) => r[key]);
+    table[label] = { median_ms: Math.round(percentile(values, 50)), p95_ms: Math.round(percentile(values, 95)), max_ms: Math.round(Math.max(...values)) };
+  }
+  console.table(table);
+  const p95 = table.TOTAL.p95_ms;
+  console.log(`95th percentile ${p95} ms: ${p95 < TARGET_MS ? 'under' : 'NOT under'} the ${TARGET_MS} ms target.`);
+} catch (e) {
+  console.error(e.message);
+  process.exitCode = 1;
+} finally {
+  await closePool();
 }
-const uid = u.user_id;
-
-console.log('\n-- single queries (what the check-in reads) --');
-await timed('login session lookup', () => query(
-  `SELECT session_id FROM Auth_Sessions WHERE token_hash = @h AND is_revoked = 0 AND expires_at > SYSUTCDATETIME()`, { h: 'x' }));
-await timed('user + cohort + region', () => query('SELECT user_id, experiment_group, region_pref FROM Users WHERE user_id = @u', { u: uid }));
-await timed('scoring weights', () => query('SELECT weight_name, weight_value FROM Scoring_Weights'));
-await timed('latest mood score', () => query('SELECT TOP 1 * FROM Mood_Scores WHERE user_id = @u ORDER BY calculated_at DESC', { u: uid }));
-await timed('listening history', () => query('SELECT song_id FROM Listening_History WHERE user_id = @u ORDER BY played_at DESC', { u: uid }));
-await timed('taste profile', () => query('SELECT genre_id, affinity_score FROM User_Taste_Profile WHERE user_id = @u', { u: uid }));
-await timed('all music songs with features + genre', () => query(
-  `SELECT s.song_id, f.energy, s.region, f.happiness, f.tempo, gx.genre_id, gx.genre_name
-   FROM Songs s JOIN Song_Features f ON f.song_id = s.song_id
-   OUTER APPLY (SELECT TOP 1 g.genre_id, g.name AS genre_name FROM Song_Genre sg JOIN Genres g ON g.genre_id = sg.genre_id
-                WHERE sg.song_id = s.song_id ORDER BY g.genre_id) gx
-   WHERE s.is_active = 1 AND s.content_type = 'music'`));
-
-console.log('\n-- the real engine functions (rolled back, nothing saved) --');
-await timed('detectMood', () => withTx(async (tx) => {
-  await engine.detectMood(uid, tx);
-  throw new Error(ROLLBACK);
-}));
-await timed('generateSuggestions', () => withTx(async (tx) => {
-  await engine.generateSuggestions(uid, tx);
-  throw new Error(ROLLBACK);
-}));
-await timed('full check-in (insert + detect + suggest)', () => withTx(async (tx) => {
-  await query(
-    'INSERT INTO Mood_Checkins (checkin_id, user_id, mood_label, energy_level, checked_at) VALUES (@id, @u, @m, @e, SYSUTCDATETIME())',
-    { id: 'chk_diag_' + Date.now(), u: uid, m: 'calm', e: 3 }, tx);
-  await engine.detectMood(uid, tx);
-  await engine.generateSuggestions(uid, tx);
-  throw new Error(ROLLBACK);
-}));
-
-console.log('\nDone. Send me this whole output.');
-process.exit(0);
