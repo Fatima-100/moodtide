@@ -7,6 +7,7 @@ import { parseEvents, insertEvents } from './events.js';
 export const api = Router();
 import { normalizeTimeZone, DEFAULT_TZ } from './tz.js';
 import { checkAndCount } from './plans.js';
+import { billing, getMyPlan } from './billing.js';
 const GENRE_APPLY = `LEFT JOIN LATERAL (SELECT g.genre_id, g.name AS genre
   FROM song_genres sg JOIN genres g ON g.genre_id = sg.genre_id WHERE sg.song_id = s.song_id ORDER BY g.genre_id LIMIT 1) gx ON true`;
 const SONG_COLS = `s.song_id, s.region, s.content_type, s.title, s.duration_sec, s.release_year, s.audio_url, s.popularity,
@@ -383,6 +384,10 @@ api.delete('/playlists/:id', wrap(async (req, res) => {
   });
   res.json({ ok: true });
 }));
+
+/* ---------- plan and mock billing (A26) ---------- */
+api.get('/me/plan', wrap(async (req, res) => res.json(await getMyPlan(req.user.id))));
+api.use('/billing', billing);
 
 /* ---------- admin ---------- */
 export const admin = Router();
