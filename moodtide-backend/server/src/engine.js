@@ -8,6 +8,7 @@
 import { query } from './db.js';
 import { HttpError, audit, clamp, newId } from './util.js';
 import { userLocalHour, timeOfDayForHour } from './tz.js';
+import { checkAndCount } from './plans.js';
 
 export const MOOD_COORDINATES = {
   happy:     { energy: 0.75, happiness: 0.85, tempo: 124, label: 'Happy' },
@@ -333,6 +334,8 @@ export async function recordPlay(tx, userId, { songId, listenedSec = 0, complete
   let type = 'full_play', value = 1;
   if (isReplay) { type = 'replay'; value = 2; }
   else if (!completed && listenedSec < 30) { type = 'skip'; value = -1; }
+  // A25: a skip uses up one of today's skips. Over the limit it throws 402 and this whole transaction is rolled back.
+  if (type === 'skip') await checkAndCount(tx, userId, 'skips');
   await insertSignal(tx, userId, songId, suggestionId, type, value);
   await bumpTaste(tx, userId, songId, value * 0.1, 1);
 
