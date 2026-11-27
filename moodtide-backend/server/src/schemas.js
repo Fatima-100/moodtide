@@ -79,6 +79,23 @@ export const checkoutSchema = z.object({
   cvc: z.string().min(1, 'cvc is required'),
 });
 
+// A32: creators and uploads
+export const LICENSES = ['CC0', 'CC BY', 'CC BY-SA', 'CC BY-NC', 'CC BY-NC-SA'];
+export const AUDIO_TYPES = { 'audio/mpeg': 'mp3', 'audio/aac': 'aac' };   // type -> file extension
+
+export const creatorRegisterSchema = z.object({
+  display_name: z.string().trim().min(1, 'display_name is required').max(100, 'display_name must be 100 characters or fewer'),
+  bio: z.string().trim().max(1000, 'bio must be 1000 characters or fewer').optional().default(''),
+});
+
+export const uploadRequestSchema = z.object({
+  title: z.string().trim().min(1, 'title is required').max(200, 'title must be 200 characters or fewer'),
+  genre_id: z.string().trim().min(1, 'genre_id is required').max(100),
+  license: z.enum(LICENSES, { error: `license must be one of ${LICENSES.join(', ')}` }),
+  consent: z.literal(true, { error: 'consent must be true: the creator has to accept the consent text' }),
+  content_type: z.enum(Object.keys(AUDIO_TYPES), { error: 'content_type must be audio/mpeg or audio/aac' }).default('audio/mpeg'),
+});
+
 /**
  * Middleware factory to validate req.body with a Zod schema.
  * Replaces req.body with parsed/sanitized data or responds with readable 400.
