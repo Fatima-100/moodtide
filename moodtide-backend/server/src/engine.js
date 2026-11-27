@@ -7,6 +7,7 @@
  */
 import { query } from './db.js';
 import { HttpError, audit, clamp, newId } from './util.js';
+import { userLocalHour, timeOfDayForHour } from './tz.js';
 
 export const MOOD_COORDINATES = {
   happy:     { energy: 0.75, happiness: 0.85, tempo: 124, label: 'Happy' },
@@ -34,7 +35,8 @@ const SONG_GENRE_APPLY = `LEFT JOIN LATERAL (
   WHERE sg.song_id = s.song_id ORDER BY g.genre_id LIMIT 1) gx ON true`;
 
 /* ------------------------------------------------------------------ detectMood */
-export async function detectMood(userId, tx, { preferCheckin = true } = {}) {
+// `now` (an ISO time) is only for tests: it pretends the current moment is that instant.
+export async function detectMood(userId, tx, { preferCheckin = true, now = null } = {}) {
   // newest first (the old mock sliced from the wrong end)
   const rows = await query(
     `SELECT h.song_id, h.completed, h.listened_sec, f.energy, f.tempo
@@ -52,8 +54,9 @@ export async function detectMood(userId, tx, { preferCheckin = true } = {}) {
   const avgEnergy = withFeat.length ? Number((withFeat.reduce((a, r) => a + r.energy, 0) / withFeat.length).toFixed(2)) : 0.5;
   const avgTempo = withFeat.length ? Math.round(withFeat.reduce((a, r) => a + r.tempo, 0) / withFeat.length) : 100;
 
-  const hour = new Date().getHours();
-  const timeOfDay = hour >= 5 && hour < 12 ? 'morning' : hour < 17 && hour >= 12 ? 'afternoon' : hour >= 17 && hour < 22 ? 'evening' : 'night';
+  // The hour on the USER's clock (users.tz, default Asia/Karachi), not the server's (A19).
+  const { hour } = await userLocalHour(userId, now, tx);
+  const timeOfDay = timeOfDayForHour(hour);
 
   let mood = 'calm', score = 75, rule = 'Default baseline mood';
   if (skipCount >= 3) { mood = 'stressed'; score = 40; rule = `Skip streak of ${skipCount} songs: restless or frustrated listening.`; }

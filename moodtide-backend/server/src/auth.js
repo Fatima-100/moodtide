@@ -4,6 +4,7 @@ import { Router } from 'express';
 import { query, withTx } from './db.js';
 import { HttpError, audit, newId, sha256, wrap } from './util.js';
 import { config } from './config.js';
+import { tryNormalizeTimeZone, DEFAULT_TZ } from './tz.js';
 
 const SECRET = config.jwtSecret; // validated at startup (config.js): no built-in fallback
 const SESSION_DAYS = 7;
@@ -40,40 +41,44 @@ async function startSession(userId, role) {
 
 const publicUser = (u) => ({
   user_id: u.user_id, username: u.username, email: u.email,
-  role: u.role_name, experiment_group: u.experiment_group,
+  role: u.role_name, experiment_group: u.experiment_group, tz: u.tz,
 });
 
 export const authRouter = Router();
 
 authRouter.post('/register', wrap(async (req, res) => {
-  const { username, email, password } = req.body || {};
+  const { username, email, password, tz } = req.body || {};
   if (!username || !email || !password || password.length < 6)
     throw new HttpError(400, 'username, email and a password of 6+ characters are required');
   const userId = newId('usr');
   const group = Math.random() < 0.5 ? 'A' : 'B';
+  // the browser's time zone; a missing or unknown name never blocks sign-up, it just means the default
+  const zone = (await tryNormalizeTimeZone(tz)) ?? DEFAULT_TZ;
   await withTx(async (tx) => {
     await query(
-      `INSERT INTO Users (user_id, role_id, username, email, password_hash, experiment_group, created_at)
-       VALUES (@id, 'rol_2', @n, @e, @p, @g, now())`,
-      { id: userId, n: username, e: email.toLowerCase(), p: bcrypt.hashSync(password, 10), g: group }, tx
+      `INSERT INTO Users (user_id, role_id, username, email, password_hash, experiment_group, tz, created_at)
+       VALUES (@id, 'rol_2', @n, @e, @p, @g, @tz, now())`,
+      { id: userId, n: username, e: email.toLowerCase(), p: bcrypt.hashSync(password, 10), g: group, tz: zone }, tx
     );
     await audit(tx, userId, 'Users', userId, 'INSERT', null, { email, group });
   });
   const token = await startSession(userId, 'user');
-  res.status(201).json({ token, user: { user_id: userId, username, email, role: 'user', experiment_group: group } });
+  res.status(201).json({ token, user: { user_id: userId, username, email, role: 'user', experiment_group: group, tz: zone } });
 }));
 
 authRouter.post('/login', wrap(async (req, res) => {
-  const { email, password } = req.body || {};
+  const { email, password, tz } = req.body || {};
   const [u] = await query(
     `SELECT u.*, r.role_name FROM Users u JOIN Roles r ON r.role_id = u.role_id WHERE lower(u.email) = @e`,
     { e: String(email || '').toLowerCase() }
   );
   if (!u || !bcrypt.compareSync(String(password || ''), u.password_hash))
     throw new HttpError(401, 'Invalid email or password');
-  await query('UPDATE Users SET last_login = now() WHERE user_id = @u', { u: u.user_id });
+  // a valid tz sent at login updates the user's time zone; an unknown one is ignored (it must not block the login)
+  const zone = await tryNormalizeTimeZone(tz);
+  await query('UPDATE Users SET last_login = now(), tz = COALESCE(@z, tz) WHERE user_id = @u', { u: u.user_id, z: zone });
   const token = await startSession(u.user_id, u.role_name);
-  res.json({ token, user: publicUser(u) });
+  res.json({ token, user: publicUser({ ...u, tz: zone ?? u.tz }) });
 }));
 
 authRouter.post('/logout', requireAuth, wrap(async (req, res) => {
