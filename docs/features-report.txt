@@ -1,0 +1,8 @@
+MoodTide measured audio features, 2026-11-28
+Eligible non-YouTube tracks: 627
+Written in this run: 627
+Active non-YouTube tracks with measured values: 627 (target 500)
+Failed in this run: 0
+Normalisation bounds (5th, 95th percentile): {"rms_db": [-23.946, -10.296], "onset": [0.868, 2.006], "centroid": [767.584, 2945.799]}
+NOTE: happiness is a PROXY (mode, brightness, tempo and tags). It is not a measurement of emotion.
+Acousticness is not measured.

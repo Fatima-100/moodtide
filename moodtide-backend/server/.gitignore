@@ -4,3 +4,6 @@ node_modules
 .lastfm-cache.json
 .yt-search-cache.json
 reports/
+scripts/audio/raw-features.json
+__pycache__/
+.venv/
