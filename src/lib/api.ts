@@ -1,4 +1,15 @@
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+const API_BASE = import.meta.env.VITE_API_URL || '/api';
+
+export class ApiError extends Error {
+  status: number;
+  code?: string;
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
 
 function getToken(): string | null {
   return localStorage.getItem('moodtide_token');
@@ -19,12 +30,23 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
   const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
 
-  if (!res.ok) {
+    if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `HTTP ${res.status}`);
+    if (res.status === 401 && getToken() && !path.startsWith('/auth/')) {
+      setToken(null);
+      window.dispatchEvent(new Event('moodtide:unauthorized'));
+    }
+    throw new ApiError(body.error || body.message || `HTTP ${res.status}`, res.status, body.code);
   }
   if (res.status === 204) return undefined as T;
   return res.json();
+}
+
+export function api<T>(path: string, opts: { method?: string; body?: unknown } = {}): Promise<T> {
+  return request<T>(path, {
+    method: opts.method ?? 'GET',
+    body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+  });
 }
 
 export const authApi = {
@@ -104,10 +126,10 @@ export const playlistsApi = {
       method: 'POST',
       body: JSON.stringify({ name, description }),
     }),
-  createJourney: (from: string, to: string) =>
+    createJourney: (from: string, to: string, region?: string) =>
     request<{ playlist_id: string }>('/playlists/journey', {
       method: 'POST',
-      body: JSON.stringify({ from, to }),
+      body: JSON.stringify({ from, to, region }),
     }),
   addSong: (playlistId: string, songId: string) =>
     request(`/playlists/${playlistId}/songs`, {

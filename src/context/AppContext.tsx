@@ -181,6 +181,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addToast({ type: 'info', title: 'Signed out', message: 'Session closed' });
   };
 
+  useEffect(() => {
+    const onUnauthorized = () => { logout(); };
+    window.addEventListener('moodtide:unauthorized', onUnauthorized);
+    return () => window.removeEventListener('moodtide:unauthorized', onUnauthorized);
+  }, []);
+
   const checkinMood = async (mood: MoodType, energy = 3) => {
     try {
       const out = await moodApi.createCheckin(mood, energy);
