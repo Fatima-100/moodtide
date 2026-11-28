@@ -1,5 +1,7 @@
 // YouTube Data API client shared by import-catalog, import-youtube and import-islamic.
-// One search costs 100 quota units (free limit 10,000 a day); a details request for 50 videos costs 1.
+// Since June 2026 searches have their own daily limit (default 100 calls); a details request for 50 videos
+// costs 1 unit of the separate 10,000-unit limit. The "units" numbers printed by the importers still use the
+// old rate of 100 per search: divide by 100 to get the number of searches.
 // Search results are cached for 7 days (scripts/.yt-search-cache.json), so repeating a search costs nothing.
 import { createCache } from './cache.js';
 import { sleep, warn } from './util.js';
