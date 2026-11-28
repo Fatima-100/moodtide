@@ -3,4 +3,6 @@ node_modules
 .jamendo-cache.json
 .lastfm-cache.json
 .yt-search-cache.json
-reports/
+reports/scripts/audio/raw-features.json
+__pycache__/
+.venv/
