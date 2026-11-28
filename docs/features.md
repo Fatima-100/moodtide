@@ -44,5 +44,31 @@ relative to this catalog. `--refit` sets the bounds again.
 - The weights are choices of this project, not fitted to listener data.
 
 ## Listening check
+Agreement: 16 of 20
 
-Paste the result of `docs/audio-sample.html` here.
+| # | Track | My judgement | Measured (energy) | Match |
+|---|---|---|---|---|
+| 1 | Harveys - Usted se me llevo la vida (feat. Blow Rasta) | energetic | energetic (0.77) | yes |
+| 2 | Kara Square - Annalise's Lullaby | calm | calm (0.32) | yes |
+| 3 | Josh Woodward (Instrumental Versions) - Little Tomcat (Instrumental Version) | calm | calm (0.25) | yes |
+| 4 | Wordsmith - Stacks | energetic | energetic (0.93) | yes |
+| 5 | Roller Genoa - Safe and Warm in Hunter's Arms | energetic | energetic (0.79) | yes |
+| 6 | Moira Waugh - Blackbird Song | calm | calm (0.28) | yes |
+| 7 | Pianochocolate - August | calm | energetic (0.83) | no |
+| 8 | Beatnik Aria - You Are | calm | calm (0.16) | yes |
+| 9 | Ed Shulzhevsky - 100 Minutes | energetic | energetic (0.74) | yes |
+| 10 | Oursvince - Falling Stars (Piano et orchestre) | calm | calm (0.32) | yes |
+| 11 | Philippe Mangold - L'éther d'Afrique | calm | energetic (0.57) | no |
+| 12 | Luke - Fight in my mind | calm | calm (0.20) | yes |
+| 13 | Udo Vismann - Moment of Truth | calm | calm (0.20) | yes |
+| 14 | Quietly Concerned - Moving Ground | calm | calm (0.42) | yes |
+| 15 | KonstantinPazuzuStudio - Celtic Harp | calm | calm (0.00) | yes |
+| 16 | Snowflake & ccMixter - Winter Sunlight (airtone feat. Leza2unes) | calm | calm (0.45) | yes |
+| 17 | Alexander Stamenkovic - To sleep or not to sleep (Ivys song) | calm | energetic (0.53) | no |
+| 18 | Samplastik - Focus-Pocus | energetic | energetic (0.96) | yes |
+| 19 | starfirefive - Devotee | calm | energetic (0.51) | no |
+| 20 | Manuzik - Oia | energetic | energetic (0.78) | yes |
+
+
+
+Tempo is coarse: measured values fall on steps about 5% apart, so it is not exact BPM.
