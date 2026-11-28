@@ -72,3 +72,5 @@ Agreement: 16 of 20
 
 
 Tempo is coarse: measured values fall on steps about 5% apart, so it is not exact BPM.
+
+All 4 mismatches in the listening check were judged calm but measured energetic (3 between 0.51 and 0.57, 1 at 0.83), so energy may be overestimated for some calm tracks.
