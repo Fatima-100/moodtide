@@ -2,15 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { catalogApi } from '../lib/api';
 import { Search, Play, Pause, X, Music2 } from 'lucide-react';
+import { MOOD_COORDINATES } from '../lib/mood';
 
 // same mood targets the backend uses, so the match % agrees with the suggestions
-const MOOD_POINT: Record<string, { e: number; h: number }> = {
-  happy: { e: 0.75, h: 0.85 },
-  calm: { e: 0.32, h: 0.65 },
-  sad: { e: 0.28, h: 0.22 },
-  energetic: { e: 0.88, h: 0.72 },
-  stressed: { e: 0.65, h: 0.28 },
-};
+
 
 const REGIONS = [
   { id: 'all', label: 'Everything', hint: 'A mix of all music' },
@@ -30,10 +25,11 @@ const SORTS = [
   { id: 'artist', label: 'Singer A-Z' },
 ];
 
+// same mood targets the backend uses, so the match % agrees with the suggestions
 const moodMatch = (song: any, mood: string) => {
-  const t = MOOD_POINT[mood];
+  const t = (MOOD_COORDINATES as Record<string, { energy: number; happiness: number }>)[mood];
   if (!t || song.energy == null || song.happiness == null) return null;
-  return Math.round(100 * Math.max(0, 1 - Math.hypot(song.energy - t.e, song.happiness - t.h)));
+  return Math.round(100 * Math.max(0, 1 - Math.hypot(song.energy - t.energy, song.happiness - t.happiness)));
 };
 
 export const BrowsePage: React.FC = () => {

@@ -1,5 +1,6 @@
 export type MoodType = 'happy' | 'calm' | 'sad' | 'energetic' | 'stressed';
 
+// Keep in sync with the backend copy of the mood coordinates; the backend file should point back to this one.
 export const MOOD_COORDINATES: Record<
   MoodType,
   { energy: number; happiness: number; tempo: number; label: string; accentColor: string; bgGlow: string }
