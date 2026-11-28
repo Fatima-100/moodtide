@@ -27,7 +27,7 @@ import {
 const GENRE_APPLY = `LEFT JOIN LATERAL (SELECT g.genre_id, g.name AS genre
   FROM song_genres sg JOIN genres g ON g.genre_id = sg.genre_id WHERE sg.song_id = s.song_id ORDER BY g.genre_id LIMIT 1) gx ON true`;
 const SONG_COLS = `s.song_id, s.region, s.content_type, s.title, s.duration_sec, s.release_year, s.audio_url, s.popularity,
-  s.external_id, s.external_url,
+  s.external_id, s.external_url, s.source, s.license, s.attribution_text, s.source_url, s.length_class,
   ar.artist_id, ar.name AS artist, al.title AS album, al.cover_url, gx.genre_id, gx.genre,
   f.energy, f.happiness, f.tempo, f.danceability, f.acousticness`;
 const SONG_FROM = `FROM Songs s JOIN Artists ar ON ar.artist_id = s.artist_id
@@ -73,6 +73,19 @@ api.get('/songs', wrap(async (req, res) => {
       off: Math.max(0, +offset || 0),
       lim: Math.min(200, Math.max(1, +limit || 50)),
     }));
+}));
+
+/** A14: "Trending on Last.fm in Pakistan" (filled by scripts/enrich-lastfm.mjs). See docs/charts-api.md. */
+api.get('/charts/pakistan', wrap(async (req, res) => {
+  const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 20));
+  const rows = await query(
+    `SELECT c.position, c.title, c.artist, c.lastfm_url, s.song_id, c.fetched_at
+     FROM chart_tracks c LEFT JOIN songs s ON s.song_id = c.song_id AND s.is_active
+     WHERE c.country = 'Pakistan' ORDER BY c.position LIMIT @lim`, { lim: limit });
+  res.json({
+    country: 'Pakistan', source: 'Last.fm', fetched_at: rows[0]?.fetched_at ?? null,
+    tracks: rows.map(({ fetched_at, ...track }) => track),
+  });
 }));
 
 /** Singers list for the "Browse by singer" view (music only) */

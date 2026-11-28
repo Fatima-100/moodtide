@@ -10,6 +10,7 @@ import { HttpError, audit, clamp, newId } from './util.js';
 import { userLocalHour, timeOfDayForHour } from './tz.js';
 import { checkAndCount } from './plans.js';
 
+// The frontend keeps a copy in src/lib/mood.ts: change both files together.
 export const MOOD_COORDINATES = {
   happy:     { energy: 0.75, happiness: 0.85, tempo: 124, label: 'Happy' },
   calm:      { energy: 0.32, happiness: 0.65, tempo: 78,  label: 'Calm' },
