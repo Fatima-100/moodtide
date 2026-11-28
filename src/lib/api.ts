@@ -10,7 +10,9 @@ export class ApiError extends Error {
     this.code = code;
   }
 }
-
+const browserTz = (): string | undefined => {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return undefined; }
+};
 function getToken(): string | null {
   return localStorage.getItem('moodtide_token');
 }
@@ -53,12 +55,12 @@ export const authApi = {
   login: (email: string, password: string) =>
     request<{ token: string; user: any }>('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, tz: browserTz() }),
     }),
   register: (username: string, email: string, password: string) =>
     request<{ token: string; user: any }>('/auth/register', {
       method: 'POST',
-      body: JSON.stringify({ username, email, password }),
+      body: JSON.stringify({ username, email, password, tz: browserTz() }),
     }),
   me: () => request<any>('/auth/me'),
   logout: () => request('/auth/logout', { method: 'POST' }).finally(() => setToken(null)),
