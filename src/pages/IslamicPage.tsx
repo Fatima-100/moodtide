@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api } from '../lib/moodApi';
+import { api } from '../lib/api';
 
 interface Category { genre_id: string; name: string }
 interface IslamicSong {
