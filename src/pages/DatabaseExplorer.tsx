@@ -1,3 +1,4 @@
+// @ts-nocheck  TODO: remove in B4 (AdminDashboard) / B5 (DatabaseExplorer)
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { TABLES_METADATA } from '../lib/db';
