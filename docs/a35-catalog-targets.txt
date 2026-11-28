@@ -1,0 +1,46 @@
+MoodTide catalog targets, 2026-11-28
+
+Tracks (active, without demo songs)
+  all tracks                          2508 / 1450  ok
+    youtube: 2218
+    jamendo: 290
+
+Categories collected by the import plan
+  Bollywood                            108 / 60    ok
+  Coke Studio Style                     92 / 60    ok
+  Ghazal                                78 / 60    ok
+  Hamd (Islamic)                        91 / 60    ok
+  Hip-Hop                              144 / 60    ok
+  J-Pop                                 90 / 60    ok
+  K-Pop                                211 / 60    ok
+  Lo-Fi Chillhop                       189 / 60    ok
+  Manqabat (Islamic)                   116 / 60    ok
+  Naat (Islamic)                       191 / 60    ok
+  Nasheed (Islamic)                     94 / 60    ok
+  Punjabi Folk                          74 / 60    ok
+  Qawwali                              132 / 60    ok
+  Sufi Kalam                           101 / 60    ok
+  Urdu Pop                             186 / 60    ok
+
+Other genres (must not be empty)
+  Ambient & Drone                       19 / 1     ok
+  Darood (Islamic)                      39 / 1     ok
+  Deep Melodic Techno                   20 / 1     ok
+  Devotional Qawwali (Islamic)          46 / 1     ok
+  Dream Pop                             58 / 1     ok
+  Indie Folk & Acoustic                128 / 1     ok
+  Kalam (Islamic)                      108 / 1     ok
+  Neo-Classical & Cinematic             28 / 1     ok
+  Punjabi Pop                          111 / 1     ok
+  Qasida (Islamic)                      76 / 1     ok
+  R&B / Soul Glitch                     39 / 1     ok
+  Synthwave & Retrowave                 19 / 1     ok
+
+Mood candidates (music tracks with a mood match above 0.75)
+  happy                                481 / 80    ok
+  calm                                 421 / 80    ok
+  sad                                   95 / 80    ok
+  energetic                            469 / 80    ok
+  stressed                              99 / 80    ok
+
+RESULT: all targets met.

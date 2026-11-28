@@ -1,0 +1,127 @@
+MoodTide catalog report, 2026-11-28
+
+Totals
+======
+  2522 songs, 2508 active, 14 hidden
+
+By source
+=========
+  source   section  total  active
+  -------  -------  -----  ------
+  youtube    music   1457    1457
+  youtube  islamic    761     761
+  jamendo    music    290     290
+  demo       music     12       0
+  demo     islamic      2       0
+
+By region (active)
+==================
+  region         section  tracks
+  -------------  -------  ------
+  international  islamic     614
+  pakistani        music     545
+  international    music     490
+  korean           music     210
+  indian           music     201
+  punjabi          music     198
+  pakistani      islamic     147
+  japanese         music     103
+
+By length class (active)
+========================
+  length    tracks  share
+  --------  ------  -----
+  short         37     1%
+  standard    2064    82%
+  long         407    16%
+
+By genre (active; a song counts in each of its genres; LOW = under 60)
+======================================================================
+  Music genres
+  genre                      tracks     
+  -------------------------  ------  ---
+  K-Pop                         211     
+  Lo-Fi Chillhop                189     
+  Urdu Pop                      186     
+  Hip-Hop                       144     
+  Qawwali                       132     
+  Indie Folk & Acoustic         128     
+  Punjabi Pop                   111     
+  Bollywood                     108     
+  Sufi Kalam                    101     
+  Coke Studio Style              92     
+  J-Pop                          90     
+  Ghazal                         78     
+  Punjabi Folk                   74     
+  Dream Pop                      58  LOW
+  R&B / Soul Glitch              39  LOW
+  Neo-Classical & Cinematic      28  LOW
+  Deep Melodic Techno            20  LOW
+  Ambient & Drone                19  LOW
+  Synthwave & Retrowave          19  LOW
+
+  Islamic categories
+  category            tracks     
+  ------------------  ------  ---
+  Naat                   191     
+  Manqabat               116     
+  Kalam                  108     
+  Nasheed                 94     
+  Hamd                    91     
+  Qasida                  76     
+  Devotional Qawwali      46  LOW
+  Darood                  39  LOW
+
+  Songs with no genre: 3
+  Genres under 60 tracks: 8 of 27
+
+Features
+========
+  feature_source  tracks
+  --------------  ------
+  estimated         2218
+  tags               290
+
+  Songs with NO features: 0
+
+Tags
+====
+  Songs with 3 or more tags: 1636 of 2508 (65%; the A14 goal is 80%)
+  Songs with NO tags: 813
+  jam_1227041  [jamendo]  aswinsainarain - MnM 1
+  jam_1227038  [jamendo]  aswinsainarain - MnM 3
+  jam_1227036  [jamendo]  aswinsainarain - MnM 6
+  jam_1227042  [jamendo]  aswinsainarain - MnM 7
+  jam_1227035  [jamendo]  aswinsainarain - MnM 8
+  jam_1346885  [jamendo]  Aural Bandito - A Massive Effect
+  jam_1346889  [jamendo]  Aural Bandito - Rum
+  jam_1346893  [jamendo]  Aural Bandito - They're Nevar Backwards
+  jam_2124813  [jamendo]  DHDMusic - African Vibe
+  jam_487761  [jamendo]  ETER - Focus
+  jam_855521  [jamendo]  I-Enk - Focus
+  jam_598270  [jamendo]  Ilona Akimova / Juice Big City - 100 Days
+  jam_765607  [jamendo]  Josh Woodward (Instrumental Versions) - Border Blaster (Instrumental Version)
+  jam_1000095  [jamendo]  Josh Woodward (Instrumental Versions) - Little Tomcat (Instrumental Version)
+  jam_764950  [jamendo]  Josh Woodward (Instrumental Versions) - Motionless Land (Instrumental Version)
+  jam_1316355  [jamendo]  kbongos - Sleep Ahead
+  jam_1434709  [jamendo]  Loufo - ti techesh
+  jam_1174818  [jamendo]  madelyn munsell - Ghost
+  jam_1174817  [jamendo]  madelyn munsell - Leave and Never Look Back
+  jam_1174819  [jamendo]  madelyn munsell - Lets Restart
+  ... and 793 more
+
+Possible duplicates (same artist and title)
+===========================================
+  none
+
+Stream links
+============
+  290 active songs with a stream URL from: jamendo, audius
+  ok 290   dead 0   unverified 0
+  source    ok  dead  unverified
+  -------  ---  ----  ----------
+  jamendo  290     0           0
+
+  No dead links.
+
+Report finished in 37 s.

@@ -66,6 +66,10 @@ const QUERIES = [
   ['kalam e', 'kalam'], ['sufi kalam', 'kalam'],
   ['manqabat', 'manqabat'],
   ['islamic nasheed', 'nasheed'], ['nasheed', 'nasheed'],
+  // A35: extra searches for the categories that need 60 items
+  ['manqabat hazrat ali', 'manqabat'], ['manqabat imam hussain', 'manqabat'], ['manqabat ghous e azam', 'manqabat'],
+  ['new hamd sharif', 'hamd'], ['beautiful hamd allah', 'hamd'],
+  ['arabic nasheed', 'nasheed'], ['english nasheed vocals only', 'nasheed'],
   ['devotional qawwali', 'qawwali'], ['sufi qawwali', 'qawwali'],
 ];
 // Artists known for this kind of content. [name, region]
